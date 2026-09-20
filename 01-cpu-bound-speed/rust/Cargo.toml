@@ -1,0 +1,11 @@
+[package]
+name = "cpu_bound_speed"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "primes"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

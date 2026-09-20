@@ -1,0 +1,11 @@
+[package]
+name = "zero_copy_parsing"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "zero_copy_parsing"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

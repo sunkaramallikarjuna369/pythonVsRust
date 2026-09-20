@@ -1,0 +1,11 @@
+[package]
+name = "data_race_safety"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "data_race"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,11 @@
+[package]
+name = "null_handling"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "null_handling"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

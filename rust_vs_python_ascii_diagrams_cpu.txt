@@ -1,0 +1,1258 @@
+===================================================================
+PYTHON vs RUST : 15 CONCEPTS, EXPLAINED STEP BY STEP
+===================================================================
+
+HOW TO READ EACH CONCEPT
+
+  PART A  What it is, in 5W+H (What, Why, When, Where, Who, How)
+  PART B  The concept in one picture
+  PART C  Python vs Rust, step by step (each box = one step)
+  PART D  Verdict: when Rust is better, when Python is fine
+
+Timings marked 'Measured' come from my test runs (1-core Linux
+sandbox, Python 3.12, Rust 1.75 --release). Yours will differ.
+
++-----------------------------------------------------------------+
+| GLOSSARY: WORDS USED BELOW                                      |
++-------------+---------------------------------------------------+
+| BYTECODE    | The simplified instructions Python compiles your  |
+|             | code into before running it.                      |
++-------------+---------------------------------------------------+
+| INTERPRETER | A program that reads and runs instructions one at |
+|             | a time while your program runs (Python).          |
++-------------+---------------------------------------------------+
+| COMPILER    | A program that converts your code into machine    |
+|             | code BEFORE it runs (Rust: rustc).                |
++-------------+---------------------------------------------------+
+| LLVM        | The toolkit inside rustc that optimizes code and  |
+|             | produces machine code for a specific CPU (see     |
+|             | Appendix A).                                      |
++-------------+---------------------------------------------------+
+| GIL         | Python's Global Interpreter Lock: only one thread |
+|             | runs Python code at a time.                       |
++-------------+---------------------------------------------------+
+| GC          | Garbage collector: cleans up unused objects while |
+|             | the program runs.                                 |
++-------------+---------------------------------------------------+
+| OWNERSHIP   | Rust rule: every value has exactly one owner;     |
+|             | when it leaves scope the value is freed.          |
++-------------+---------------------------------------------------+
+| BORROW      | Using a value without owning it: &x reads it,     |
+|             | &mut x may change it (only one at a time).        |
++-------------+---------------------------------------------------+
+| OPTION      | Rust type: Some(value) or None. Used when a value |
+|             | may be missing.                                   |
++-------------+---------------------------------------------------+
+| RESULT      | Rust type: Ok(value) or Err(reason). Used when    |
+|             | something may fail.                               |
++-------------+---------------------------------------------------+
+| MUTEX / ARC | Mutex = a lock around shared data. Arc = a shared |
+|             | pointer that many threads can hold.               |
++-------------+---------------------------------------------------+
+| DROP / RAII | Rust runs cleanup code automatically when a value |
+|             | leaves scope.                                     |
++-------------+---------------------------------------------------+
+| WASM        | WebAssembly: a compact format that runs in        |
+|             | browsers and other sandboxes.                     |
++-------------+---------------------------------------------------+
+| PYO3        | A Rust library for writing Python modules in      |
+|             | Rust.                                             |
++-------------+---------------------------------------------------+
+
+===================================================================
+1. CPU-BOUND SPEED
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | How fast a program runs when the CPU itself is the busy |
+|       | part: loops, maths, parsing (not waiting for network or |
+|       | disk).                                                  |
++-------+---------------------------------------------------------+
+| WHY   | Slow compute = longer jobs, bigger cloud bills, laggy   |
+|       | apps.                                                   |
++-------+---------------------------------------------------------+
+| WHEN  | Whenever the program is busy calculating: transforming  |
+|       | millions of rows, encoding, simulations.                |
++-------+---------------------------------------------------------+
+| WHERE | Data transforms, simulations, compression, crypto,      |
+|       | feature calculation.                                    |
++-------+---------------------------------------------------------+
+| WHO   | Anyone whose job runs for minutes/hours or is billed    |
+|       | per CPU-second: data engineers, backend and game        |
+|       | developers.                                             |
++-------+---------------------------------------------------------+
+| HOW   | Your code becomes CPU instructions. Python reads and    |
+|       | runs them one by one at run time (interpreter). Rust    |
+|       | converts them ahead of time into machine code (LLVM).   |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   CPU-bound (the CPU never rests - this is where Rust shines):
+   CPU  : [calc][calc][calc][calc][calc][calc][calc]   busy 100%
+   Disk : ............ idle ............................
+
+   I/O-bound (the language matters much less):
+   CPU  : [c].............[c].............[c]..........
+   Net  : ..[=====waiting=====]..[=====waiting=====]...
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) Write .py code            |   | 1) Write .rs code            |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) Compile to bytecode       |   | 2) Compiler (LLVM) opti-     |
+|    (quick, every run)        |   |    mizes ONCE, emits         |
++------------------------------+   |    machine code              |
+               v                   +------------------------------+
++------------------------------+                  v
+| 3) Interpreter loop reads    |   +------------------------------+
+|    each instruction,         |   | 3) CPU runs the machine      |
+|    checks types, runs it     |   |    code directly             |
++------------------------------+   +------------------------------+
+               v                                  |
++------------------------------+                  |
+| 4) ...repeated for EVERY     |                  |
+|    step of every loop        |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: slower, extra              RESULT: faster, no
+  work on every step                 middle layer at runtime
+
+Measured: 2.666 s vs 0.127 s (primes < 1M) = ~21x
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better when the heavy loops are in YOUR code (about    |
+|        | 21x faster in my test).                                |
++--------+--------------------------------------------------------+
+| PYTHON | Fine when the heavy work already runs inside C/Rust    |
+|        | libraries (NumPy, Polars) or the job is short.         |
++--------+--------------------------------------------------------+
+
+===================================================================
+2. MEMORY MANAGEMENT
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | How a program gets memory for its data and gives it     |
+|       | back when finished.                                     |
++-------+---------------------------------------------------------+
+| WHY   | Never giving it back = leak (memory grows until a       |
+|       | crash). Giving it back too early = crash or corrupted   |
+|       | data. Cleaning at bad moments = pauses.                 |
++-------+---------------------------------------------------------+
+| WHEN  | Every time you create a list, string or object, which   |
+|       | is constantly.                                          |
++-------+---------------------------------------------------------+
+| WHERE | Every program. It matters most in long-running services |
+|       | and latency-sensitive systems.                          |
++-------+---------------------------------------------------------+
+| WHO   | The runtime (Python) or the compiler (Rust) does the    |
+|       | work; you feel it as pauses, leaks or speed.            |
++-------+---------------------------------------------------------+
+| HOW   | Python counts who uses each object and runs a garbage   |
+|       | collector (GC) for cycles. Rust gives each value ONE    |
+|       | owner and frees it when the owner leaves scope.         |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   STACK (your variables)          HEAP (the big data)
+   +--------------+                +------------------------+
+   | name  -------+--------------->| "hello world ..."      |
+   +--------------+                +------------------------+
+
+   Who gives the heap box back, and WHEN?
+   Python : when nothing points at it any more (+ GC sweeps)
+   Rust   : when its single owner leaves scope (known at compile)
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) Create object             |   | 1) A value has ONE owner     |
+|    (refcount = 1)            |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 2) Owner goes out of         |
+| 2) Every use changes the     |   |    scope                     |
+|    refcount up / down        |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 3) Compiler already put      |
+| 3) Refcount 0 = freed.       |   |    the free() right there    |
+|    Cycles need the GC        |   +------------------------------+
++------------------------------+                  |
+               v                                  |
++------------------------------+                  |
+| 4) GC scans now and then     |                  |
+|    = small pauses            |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: automatic but              RESULT: no GC, no
+  runtime cost + pauses              pauses, freed on time
+
+Measured (3M create+drop of small lists): 0.853 s vs 0.042 s = ~20x
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better when steady, predictable latency matters (no GC |
+|        | pauses).                                               |
++--------+--------------------------------------------------------+
+| PYTHON | Fine for most apps: automatic and easy, pauses rarely  |
+|        | matter.                                                |
++--------+--------------------------------------------------------+
+
+===================================================================
+3. PARALLELISM
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Doing several pieces of work at the very same moment on |
+|       | different CPU cores.                                    |
++-------+---------------------------------------------------------+
+| WHY   | Modern CPUs have many cores. A single thread uses only  |
+|       | one and leaves the rest idle.                           |
++-------+---------------------------------------------------------+
+| WHEN  | Big jobs that can be split into independent pieces.     |
++-------+---------------------------------------------------------+
+| WHERE | Batch ETL, image/video processing, big aggregations.    |
++-------+---------------------------------------------------------+
+| WHO   | Anyone with a multi-core machine and heavy compute.     |
++-------+---------------------------------------------------------+
+| HOW   | Split the data into chunks, give each core a chunk,     |
+|       | combine the results. Python's GIL lets only one thread  |
+|       | run Python code at a time; Rust has no GIL.             |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   ONE thread : Core 1 [########################]
+
+   FOUR threads on four cores (ideal case):
+                Core 1 [######]
+                Core 2 [######]
+                Core 3 [######]
+                Core 4 [######]        ~4x faster
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) Start 4 threads           |   | 1) Start 4 threads           |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) GIL: only ONE thread      |   | 2) No GIL: all threads run   |
+|    runs Python code at       |   |    on all CPU cores          |
+|    a time                    |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 3) Rayon: .par_iter()        |
+| 3) The other 3 wait          |   |    splits and balances       |
+|    (no CPU speed-up)         |   |    the work for you          |
++------------------------------+   +------------------------------+
+               v                                  |
++------------------------------+                  |
+| 4) Workaround:               |                  |
+|    multiprocessing = 4       |                  |
+|    processes, copy data,     |                  |
+|    more RAM                  |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: threads ~1x,               RESULT: ~N x on N cores,
+  processes ~N x minus cost          one-line change
+
+Not measurable on my 1-core sandbox: run the parallel programs on
+your PC.
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better for CPU work: one line with Rayon, and the      |
+|        | compiler checks it is safe.                            |
++--------+--------------------------------------------------------+
+| PYTHON | Fine for I/O work, or use multiprocessing / libraries  |
+|        | that release the GIL.                                  |
++--------+--------------------------------------------------------+
+
+===================================================================
+4. DATA-RACE SAFETY
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Making sure two threads do not read and change the same |
+|       | data at the same time in a way that corrupts it.        |
++-------+---------------------------------------------------------+
+| WHY   | Races give wrong answers only SOMETIMES, which makes    |
+|       | them some of the hardest bugs to find.                  |
++-------+---------------------------------------------------------+
+| WHEN  | Any time threads share data that at least one of them   |
+|       | can change.                                             |
++-------+---------------------------------------------------------+
+| WHERE | Shared counters, caches, connection pools.              |
++-------+---------------------------------------------------------+
+| WHO   | Anyone writing multi-threaded code.                     |
++-------+---------------------------------------------------------+
+| HOW   | Use locks or atomics so only one thread changes the     |
+|       | value at a time. Python: you must remember to. Rust:    |
+|       | the compiler refuses code that could race.              |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   counter = 5   (after two increments it should be 7)
+
+   Thread A : read 5 ........ add .... write 6
+   Thread B : ....... read 5 ........ add .... write 6
+
+   Both read 5 before either wrote -> final = 6, one update LOST.
+   A lock (Mutex) makes B wait until A has finished writing.
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) 2 threads both read       |   | 1) 2 threads want to         |
+|    counter = 5               |   |    change the same value     |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) Both compute 5 + 1        |   | 2) Compiler checks who       |
++------------------------------+   |    owns / shares it          |
+               v                   +------------------------------+
++------------------------------+                  v
+| 3) Both write 6              |   +------------------------------+
++------------------------------+   | 3) ERROR: will not build     |
+               v                   |    unless you use Mutex      |
++------------------------------+   |    or an atomic              |
+| 4) Expected 7, got 6         |   +------------------------------+
+|    (update LOST)             |                  v
++------------------------------+   +------------------------------+
+               |                   | 4) With Mutex: one at a      |
+               |                   |    time, always 7            |
+               |                   +------------------------------+
+               |                                  |
+               v                                  v
+  RESULT: bug shows at               RESULT: bug caught at
+  RUNTIME, only sometimes            COMPILE time
+
+Measured: Python lost ~2.0M of 4M updates; Rust always 4,000,000.
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better: data races cannot happen in safe Rust          |
+|        | (deadlocks still can).                                 |
++--------+--------------------------------------------------------+
+| PYTHON | Fine for small programs if you always use a Lock or a  |
+|        | queue.                                                 |
++--------+--------------------------------------------------------+
+
+===================================================================
+5. ASYNC I/O
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Doing other work while waiting for slow things          |
+|       | (network, disk, database) instead of freezing.          |
++-------+---------------------------------------------------------+
+| WHY   | Waiting wastes time. One slow request should not block  |
+|       | thousands of others.                                    |
++-------+---------------------------------------------------------+
+| WHEN  | Many connections or requests that spend most of their   |
+|       | time waiting.                                           |
++-------+---------------------------------------------------------+
+| WHERE | Web servers, API gateways, crawlers, message consumers. |
++-------+---------------------------------------------------------+
+| WHO   | Backend and data-streaming developers.                  |
++-------+---------------------------------------------------------+
+| HOW   | A task pauses at 'await' and a scheduler runs another   |
+|       | task. Python's asyncio uses one thread; Rust's Tokio    |
+|       | uses many threads.                                      |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   Task A : [run]~~~~ waiting for network ~~~~[run]
+   Task B :       [run]~~~~ waiting ~~~~[run]
+   Task C :             [run]~~~~ waiting ~~~~[run]
+
+   While one task waits, the CPU works on another task.
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) asyncio: one event        |   | 1) Tokio runtime with        |
+|    loop on ONE thread        |   |    a pool of worker threads  |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) Task hits await:          |   | 2) Task hits .await:         |
+|    hands control back        |   |    thread runs another task  |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) Loop starts another       |   | 3) Tasks spread over ALL     |
+|    waiting task              |   |    cores (work stealing)     |
++------------------------------+   +------------------------------+
+               v                                  |
++------------------------------+                  |
+| 4) CPU-heavy code in any     |                  |
+|    task BLOCKS them all      |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: fine for I/O,              RESULT: I/O + CPU work
+  one core for the rest              scale across cores
+
+Measured (50,000 tasks): overhead 0.561 s vs 0.023 s = ~25x less.
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better when you have huge concurrency, or CPU work     |
+|        | mixed in with I/O.                                     |
++--------+--------------------------------------------------------+
+| PYTHON | Fine for I/O-heavy programs with little CPU work per   |
+|        | request.                                               |
++--------+--------------------------------------------------------+
+
+===================================================================
+6. NULL HANDLING
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | How a language represents 'there is no value here' (a   |
+|       | missing email, a failed lookup).                        |
++-------+---------------------------------------------------------+
+| WHY   | A missing value used as if it existed is one of the     |
+|       | most common causes of crashes. Null is often called the |
+|       | 'billion-dollar mistake'.                               |
++-------+---------------------------------------------------------+
+| WHEN  | Looking up keys, reading database fields, parsing       |
+|       | input.                                                  |
++-------+---------------------------------------------------------+
+| WHERE | JSON/API data, database rows, config files.             |
++-------+---------------------------------------------------------+
+| WHO   | Anyone handling real-world, messy data.                 |
++-------+---------------------------------------------------------+
+| HOW   | Python returns None silently. Rust wraps the value in   |
+|       | an Option that you must open (match / map / unwrap_or)  |
+|       | before using it.                                        |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   Python : email -> "a@b.com"  OR  None   (they look the same)
+                     calling .lower() on None = CRASH
+
+   Rust   : email -> Some("a@b.com")  OR  None   (a labelled box)
+                     you must open the box before using it
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) d.get('email')            |   | 1) map.get("email")          |
+|    returns None              |   |    returns an Option         |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) Code calls .lower()       |   | 2) Option is Some(value)     |
+|    on that None              |   |    or None                   |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) Works fine... until       |   | 3) Compiler: 'handle None    |
+|    that one record arrives   |   |    first, or no build'       |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 4) CRASH:                    |   | 4) Use match / map /         |
+|    AttributeError            |   |    unwrap_or                 |
++------------------------------+   +------------------------------+
+               |                                  |
+               v                                  v
+  RESULT: found at                   RESULT: found at
+  RUNTIME (maybe in prod)            COMPILE time
+
+Measured: Python crashed after 99,999 users; safe run 0.100 s vs
+0.034 s.
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better: missing-value crashes are caught before the    |
+|        | program runs.                                          |
++--------+--------------------------------------------------------+
+| PYTHON | Fine when data is clean, or with type hints + mypy     |
+|        | checks.                                                |
++--------+--------------------------------------------------------+
+
+===================================================================
+7. ERROR HANDLING
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | How a program reports and reacts when something fails   |
+|       | (bad input, missing file, network down).                |
++-------+---------------------------------------------------------+
+| WHY   | An unhandled failure crashes the program. A hidden      |
+|       | failure gives wrong results.                            |
++-------+---------------------------------------------------------+
+| WHEN  | Any operation that can fail: parsing, files, network,   |
+|       | databases.                                              |
++-------+---------------------------------------------------------+
+| WHERE | Pipelines, services, command-line tools.                |
++-------+---------------------------------------------------------+
+| WHO   | Every developer. Users feel it as crashes.              |
++-------+---------------------------------------------------------+
+| HOW   | Python throws exceptions (not shown in the function     |
+|       | signature). Rust returns a Result: Ok(value) or         |
+|       | Err(reason), which you handle or pass on with ?.        |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   Python (exception):  parse() --X--> raises an error
+                        it flies UP the call stack to a try/except
+                        catches it (or the program crashes)
+
+   Rust (Result):       parse() ------> returns Ok(42) / Err("bad")
+                        the caller matches on it, or uses ?
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) int('abc')                |   | 1) "abc".parse::<u32>()      |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) Raises ValueError         |   | 2) Returns a Result:         |
+|    (not visible in the       |   |    Ok(n) or Err(e)           |
+|    function signature)       |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 3) Caller must match it      |
+| 3) Flies up the call stack   |   |    or pass it on with ?      |
+|    to a try/except           |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 4) Error is just a normal    |
+| 4) None found: program       |   |    value, no unwinding       |
+|    CRASHES                   |   +------------------------------+
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: slow when errors           RESULT: fast, explicit,
+  are common                         cannot be ignored
+
+Measured (1M bad of 2M values): 1.020 s vs 0.011 s = ~90x.
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better when errors are common (about 90x in my test)   |
+|        | or must never be missed.                               |
++--------+--------------------------------------------------------+
+| PYTHON | Fine and readable when errors are rare.                |
++--------+--------------------------------------------------------+
+
+===================================================================
+8. TYPE SYSTEM (ENUM + MATCH)
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Rules about what kind of data each variable holds and   |
+|       | what you may do with it. An enum lists every possible   |
+|       | case of something.                                      |
++-------+---------------------------------------------------------+
+| WHY   | Catches mistakes early and makes wrong states           |
+|       | impossible to build.                                    |
++-------+---------------------------------------------------------+
+| WHEN  | While you write code (compile time in Rust; when the    |
+|       | line runs in Python).                                   |
++-------+---------------------------------------------------------+
+| WHERE | Domain models, state machines, protocol parsers,        |
+|       | claim/order lifecycles.                                 |
++-------+---------------------------------------------------------+
+| WHO   | Teams with large, long-lived code, and anyone           |
+|       | refactoring.                                            |
++-------+---------------------------------------------------------+
+| HOW   | Rust checks types and demands that every enum case is   |
+|       | handled, before the program exists. Python checks only  |
+|       | when the line runs (hints + mypy are optional).         |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   enum Shape  =  exactly ONE of these:
+        +--------+     +------+     +----------+
+        | Circle |     | Rect |     | Triangle |
+        +--------+     +------+     +----------+
+
+   match shape { Circle => ..,  Rect => ..,  Triangle => .. }
+   Rust asks: is EVERY box handled?  If not: compile error.
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) shape = {'type': 'tri'}   |   | 1) enum Shape { Circle,      |
++------------------------------+   |    Rect, Triangle }          |
+               v                   +------------------------------+
++------------------------------+                  v
+| 2) if / elif chain,          |   +------------------------------+
+|    forgot the 'tri' case     |   | 2) match MUST cover          |
++------------------------------+   |    every variant             |
+               v                   +------------------------------+
++------------------------------+                  v
+| 3) Silently returns None     |   +------------------------------+
++------------------------------+   | 3) Missing one =             |
+               v                   |    compile ERROR             |
++------------------------------+   +------------------------------+
+| 4) Bug shows up later,       |                  v
+|    far from the cause        |   +------------------------------+
++------------------------------+   | 4) Add a variant: every      |
+               |                   |    match is flagged          |
+               |                   +------------------------------+
+               |                                  |
+               v                                  v
+  RESULT: mistakes hide              RESULT: illegal states
+  until runtime                      can't be built
+
+Measured (5M area() calls): 0.67 s vs 0.006 s.
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better for large or critical code where a forgotten    |
+|        | case is costly.                                        |
++--------+--------------------------------------------------------+
+| PYTHON | Fine for scripts and prototypes; add type hints for    |
+|        | bigger code.                                           |
++--------+--------------------------------------------------------+
+
+===================================================================
+9. MEMORY FOOTPRINT
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | How much RAM your data takes.                           |
++-------+---------------------------------------------------------+
+| WHY   | RAM costs money and limits how much data fits. Smaller  |
+|       | data also fits the CPU cache, which is faster.          |
++-------+---------------------------------------------------------+
+| WHEN  | Big in-memory datasets, containers with memory limits.  |
++-------+---------------------------------------------------------+
+| WHERE | Edge devices, sidecars, in-memory indexes, dense        |
+|       | microservices.                                          |
++-------+---------------------------------------------------------+
+| WHO   | Anyone paying per GB or hitting out-of-memory errors.   |
++-------+---------------------------------------------------------+
+| HOW   | Python: every value is a full object (header +          |
+|       | pointers). Rust: plain values packed side by side in    |
+|       | one block.                                              |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   Python list of records (pointers to scattered objects):
+   [ptr]-->[ header | id | x | y | flag ]-->[int obj][float obj]..
+   [ptr]-->[ header | id | x | y | flag ]-->[int obj][float obj]..
+
+   Rust Vec of records (one block, no pointers, 32 bytes each):
+   [id x y flag][id x y flag][id x y flag][id x y flag] ...
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) list holds 1M             |   | 1) Vec<Rec> = ONE block      |
+|    POINTERS                  |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 2) Each record = 32 bytes    |
+| 2) Each record = an object   |   |    id | x | y | flag         |
+|    (16 B header + slots)     |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 3) Packed side by side,      |
+| 3) + separate int and        |   |    no headers, no pointers   |
+|    float objects for the     |   +------------------------------+
+|    fields                    |                  |
++------------------------------+                  |
+               v                                  |
++------------------------------+                  |
+| 4) Objects scattered         |                  |
+|    around memory             |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: about 161 MB               RESULT: about 31 MB
+
+Measured: 161.0 MB vs 30.6 MB = ~5x less RAM.
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better for big data in memory (about 5x less RAM in my |
+|        | test).                                                 |
++--------+--------------------------------------------------------+
+| PYTHON | Fine for small data, or use NumPy/Arrow arrays, which  |
+|        | are compact.                                           |
++--------+--------------------------------------------------------+
+
+===================================================================
+10. ZERO-COPY PARSING
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Reading data by pointing at the original bytes instead  |
+|       | of making a new copy of each piece.                     |
++-------+---------------------------------------------------------+
+| WHY   | Copying costs time and memory, multiplied by millions   |
+|       | of records.                                             |
++-------+---------------------------------------------------------+
+| WHEN  | Parsing big files or streams: logs, CSV, JSON, network  |
+|       | messages.                                               |
++-------+---------------------------------------------------------+
+| WHERE | Log processors, ingestion pipelines, protocol parsers.  |
++-------+---------------------------------------------------------+
+| WHO   | Data engineers ingesting large volumes.                 |
++-------+---------------------------------------------------------+
+| HOW   | Rust's &str is a slice: a start position + a length     |
+|       | pointing INTO the original buffer. Python's split()     |
+|       | builds brand-new string objects.                        |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   buffer :  1,ERROR,user9,45
+             ^ ^^^^^ ^^^^^ ^^
+   Rust   :  slices = (start, length) INTO the buffer
+             "ERROR" = (2, 5)   -> no new memory used
+   Python :  "1"  "ERROR"  "user9"  "45"  -> 4 NEW string objects
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) Text buffer in memory     |   | 1) Text buffer in memory     |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) line.split(',') builds    |   | 2) split(',') gives &str =   |
+|    NEW string objects        |   |    pointer + length INTO     |
++------------------------------+   |    the same buffer           |
+               v                   +------------------------------+
++------------------------------+                  v
+| 3) int(p[3]) converts        |   +------------------------------+
+|    another copy              |   | 3) Parse in place: no        |
++------------------------------+   |    copy, no new strings      |
+               v                   +------------------------------+
++------------------------------+                  |
+| 4) Many allocations for      |                  |
+|    millions of lines         |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: more allocation,           RESULT: far fewer
+  more time                          allocations
+
+Measured (2M CSV lines): 0.358 s vs 0.097 s = ~4x.
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better for very large streams (about 4x in my test).   |
++--------+--------------------------------------------------------+
+| PYTHON | Fine for moderate files (split() itself runs as fast C |
+|        | code), or use pandas/Polars.                           |
++--------+--------------------------------------------------------+
+
+===================================================================
+11. DEPLOYMENT
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Getting your program from your laptop to run somewhere  |
+|       | else: a server, container or customer PC.               |
++-------+---------------------------------------------------------+
+| WHY   | More moving parts means more things that can break,     |
+|       | bigger images and slower start-up.                      |
++-------+---------------------------------------------------------+
+| WHEN  | Every release, and especially for serverless functions  |
+|       | that start often.                                       |
++-------+---------------------------------------------------------+
+| WHERE | Docker, Cloud Run / Lambda, tools you hand to other     |
+|       | people.                                                 |
++-------+---------------------------------------------------------+
+| WHO   | DevOps and anyone shipping software.                    |
++-------+---------------------------------------------------------+
+| HOW   | Python: ship an interpreter + virtualenv + libraries +  |
+|       | your code. Rust: build one binary file and copy it.     |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   Python package to ship:            Rust package to ship:
+   +---------------------------+      +----------------+
+   | Python interpreter        |      |                |
+   | virtualenv                |      |   ONE binary   |
+   | libraries (pip)           |      |   (.exe)       |
+   | your .py code             |      |                |
+   +---------------------------+      +----------------+
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) Install the right         |   | 1) cargo build --release     |
+|    Python version            |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 2) Get ONE binary file       |
+| 2) Create a virtualenv       |   |    (dependencies inside)     |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) pip install every         |   | 3) Copy it, run it           |
+|    dependency                |   |    (~1 ms start)             |
++------------------------------+   +------------------------------+
+               v                                  |
++------------------------------+                  |
+| 4) Ship code + venv, start   |                  |
+|    interpreter (~9 ms)       |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: many moving                RESULT: one file, tiny
+  parts                              container image
+
+Measured start-up: 9.34 ms vs 0.91 ms; hello binary ~338 KB.
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better for tiny images, fast cold starts and tools you |
+|        | give to others.                                        |
++--------+--------------------------------------------------------+
+| PYTHON | Fine when Docker/CI already manage your environment.   |
++--------+--------------------------------------------------------+
+
+===================================================================
+12. RESOURCE CLEANUP
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Giving back what you borrowed from the OS: files,       |
+|       | sockets, locks, database connections.                   |
++-------+---------------------------------------------------------+
+| WHY   | Unreleased items cause leaks, locked files and 'too     |
+|       | many open files' errors.                                |
++-------+---------------------------------------------------------+
+| WHEN  | Whenever you open something that must be closed.        |
++-------+---------------------------------------------------------+
+| WHERE | File handling, database pools, network code.            |
++-------+---------------------------------------------------------+
+| WHO   | Every developer of long-running programs.               |
++-------+---------------------------------------------------------+
+| HOW   | Python: a 'with' block closes it (or the GC does,       |
+|       | someday). Rust: when the owner leaves scope, Drop runs  |
+|       | automatically and closes it (called RAII).              |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   open()  ---->  use it  ---->  close()   <- must happen, or LEAK
+
+   Python : you write 'with' (or hope the GC closes it someday)
+   Rust   : the owner leaves scope -> Drop closes it, always
+            { let f = File::open("a.txt")?; ... }  <- closed here
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) Open file / lock /        |   | 1) File::open() gives an     |
+|    connection                |   |    owner value               |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) Used 'with'? closed at    |   | 2) Owner goes out of         |
+|    end of the block          |   |    scope                     |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) Forgot 'with'? closed     |   | 3) Drop runs automatically:  |
+|    only when GC frees it     |   |    file closed right there   |
++------------------------------+   +------------------------------+
+               v                                  |
++------------------------------+                  |
+| 4) Timing unknown =          |                  |
+|    possible leak             |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: depends on you             RESULT: always closed,
+  remembering                        at a known moment
+
+(Correctness benefit, not a speed test.)
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better: automatic, always, at a known moment.          |
++--------+--------------------------------------------------------+
+| PYTHON | Fine if you always use 'with'.                         |
++--------+--------------------------------------------------------+
+
+===================================================================
+13. IMMUTABILITY
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Data that cannot change after it is created. In Rust,   |
+|       | variables are unchangeable unless you write 'mut'.      |
++-------+---------------------------------------------------------+
+| WHY   | If nothing can change your data behind your back, 'who  |
+|       | changed this?' bugs disappear, and threads are safer.   |
++-------+---------------------------------------------------------+
+| WHEN  | Sharing data between functions or threads.              |
++-------+---------------------------------------------------------+
+| WHERE | Config, shared state, data pipelines.                   |
++-------+---------------------------------------------------------+
+| WHO   | Anyone who has debugged a value that changed            |
+|       | unexpectedly.                                           |
++-------+---------------------------------------------------------+
+| HOW   | Rust: 'let' is locked, 'let mut' can change, and only   |
+|       | ONE &mut may exist at a time. Python: everything is     |
+|       | changeable by default.                                  |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   Python :  x --> [1, 2, 3]   <-- f(x) can change it
+                               <-- g(x) can change it too
+                               Who changed it? Search everywhere.
+
+   Rust   :  let x = [1,2,3]   LOCKED by default
+             let mut x         may change; only one &mut at a time
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) x = [1, 2, 3]             |   | 1) let x = vec![1, 2, 3];    |
++------------------------------+   |    (immutable by default)    |
+               v                   +------------------------------+
++------------------------------+                  v
+| 2) Any function that gets    |   +------------------------------+
+|    x may change it           |   | 2) x.push(4) is an ERROR     |
++------------------------------+   |    unless: let mut x         |
+               v                   +------------------------------+
++------------------------------+                  v
+| 3) Caller's list changed     |   +------------------------------+
+|    unexpectedly              |   | 3) &mut = only ONE writer    |
++------------------------------+   |    at any moment             |
+               v                   +------------------------------+
++------------------------------+                  |
+| 4) Classic trap: mutable     |                  |
+|    default arguments         |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: surprising side            RESULT: changes are
+  effects                            explicit + exclusive
+
+(Correctness benefit, not a speed test.)
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better when you want the compiler to enforce it.       |
++--------+--------------------------------------------------------+
+| PYTHON | Fine with habits: tuples, frozen dataclasses, copying. |
++--------+--------------------------------------------------------+
+
+===================================================================
+14. PORTABILITY
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Where your program can run: which devices, operating    |
+|       | systems and environments.                               |
++-------+---------------------------------------------------------+
+| WHY   | More places means more users. Small devices have no     |
+|       | room for a heavy interpreter.                           |
++-------+---------------------------------------------------------+
+| WHEN  | Targeting browsers, phones, IoT devices, edge servers   |
+|       | or different CPUs.                                      |
++-------+---------------------------------------------------------+
+| WHERE | WebAssembly in browsers, microcontrollers, edge         |
+|       | functions, servers.                                     |
++-------+---------------------------------------------------------+
+| WHO   | Product and embedded developers.                        |
++-------+---------------------------------------------------------+
+| HOW   | Rust compiles to native code for many targets,          |
+|       | including wasm32 and no_std. Python needs an            |
+|       | interpreter (Pyodide and MicroPython are cut-down       |
+|       | options).                                               |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+                        +--> Windows / Linux / macOS
+   Rust source ---------+--> ARM chips (phones, Raspberry Pi)
+   (one codebase)       +--> WebAssembly (in the browser)
+                        +--> tiny embedded chips (no_std)
+
+   Python: an interpreter must exist wherever it runs.
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+             PYTHON                              RUST
++------------------------------+   +------------------------------+
+| 1) Needs a Python            |   | 1) Same Rust source          |
+|    interpreter installed     |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 2) Pick a target: x86, ARM,  |
+| 2) Servers and PCs: fine     |   |    wasm32, no_std            |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) Browser: needs a heavy    |   | 3) Runs in browsers (WASM),  |
+|    runtime (e.g. Pyodide)    |   |    edge, embedded, servers   |
++------------------------------+   +------------------------------+
+               v                                  |
++------------------------------+                  |
+| 4) Tiny chips: only a        |                  |
+|    cut-down MicroPython      |                  |
++------------------------------+                  |
+               |                                  |
+               v                                  v
+  RESULT: limited reach              RESULT: runs where
+                                     Python can't
+
+(Reach benefit, not a speed test.)
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Better when you need browser, edge or embedded reach.  |
++--------+--------------------------------------------------------+
+| PYTHON | Fine on servers and PCs.                               |
++--------+--------------------------------------------------------+
+
+===================================================================
+15. PYTHON INTEROP
+===================================================================
+
++-----------------------------------------------------------------+
+| PART A - WHAT IT IS (5W+H)                                      |
++-------+---------------------------------------------------------+
+| WHAT  | Using Rust code from inside a Python program: a Python  |
+|       | module written in Rust.                                 |
++-------+---------------------------------------------------------+
+| WHY   | Keep Python's convenience and speed up only the slow    |
+|       | part, with no full rewrite.                             |
++-------+---------------------------------------------------------+
+| WHEN  | You profiled your code and found one hot function.      |
++-------+---------------------------------------------------------+
+| WHERE | Number crunching, parsers, validators. Polars,          |
+|       | pydantic-core and ruff are Rust-backed.                 |
++-------+---------------------------------------------------------+
+| WHO   | Python teams that need speed without leaving Python.    |
++-------+---------------------------------------------------------+
+| HOW   | Write the function in Rust with PyO3, build with        |
+|       | maturin, then import it like any Python module.         |
++-------+---------------------------------------------------------+
+
+--- PART B - THE CONCEPT IN ONE PICTURE ---------------------------
+
+   +-------------------------------+
+   |  Your Python app (unchanged)  |
+   |   ...                         |     +----------------------+
+   |   r = fast_mod.compute(data)  |---->| Rust function        |
+   |   ...                         |<----| (native, via PyO3)   |
+   +-------------------------------+     +----------------------+
+
+--- PART C - PYTHON vs RUST, STEP BY STEP -------------------------
+
+          PYTHON ALONE                      PYTHON + RUST
++------------------------------+   +------------------------------+
+| 1) Profile: find the slow    |   | 1) Rewrite ONLY that         |
+|    function                  |   |    function in Rust          |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) Loop runs in the          |   | 2) Build with maturin        |
+|    interpreter               |   |    (PyO3 bindings)           |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) Program stays slow        |   | 3) import fast_mod in        |
+|    at that spot              |   |    Python as usual           |
++------------------------------+   +------------------------------+
+               |                                  v
+               |                   +------------------------------+
+               |                   | 4) Rest of code unchanged,   |
+               |                   |    hot path runs native      |
+               |                   +------------------------------+
+               |                                  |
+               v                                  v
+  RESULT: slow hot path              RESULT: same Python app,
+                                     fast hot path
+
+(Not measured here: needs PyO3 set up locally.)
+
+--- PART D - VERDICT ----------------------------------------------
+
++-----------------------------------------------------------------+
+| WHICH IS BETTER?                                                |
++--------+--------------------------------------------------------+
+| RUST   | Best of both: rewrite only the slow function in Rust.  |
++--------+--------------------------------------------------------+
+| PYTHON | Python stays the glue: keep it for everything that is  |
+|        | not hot.                                               |
++--------+--------------------------------------------------------+
+
+===================================================================
+APPENDIX A. WHAT IS LLVM?
+===================================================================
+
++-----------------------------------------------------------------+
+| 5W+H                                                            |
++-------+---------------------------------------------------------+
+| WHAT  | A toolkit that turns a compiler's middle-stage code     |
+|       | (LLVM IR) into fast machine code for a specific CPU.    |
+|       | Rust's compiler, rustc, uses it.                        |
++-------+---------------------------------------------------------+
+| WHY   | Rust, C, C++ and Swift can share one strong optimizer   |
+|       | and many CPU targets instead of each building their     |
+|       | own.                                                    |
++-------+---------------------------------------------------------+
+| WHEN  | Every time you run cargo build or rustc, after Rust's   |
+|       | own checks pass.                                        |
++-------+---------------------------------------------------------+
+| WHERE | Inside rustc. You never call it yourself. It is also    |
+|       | behind Clang and Swift.                                 |
++-------+---------------------------------------------------------+
+| WHO   | Compiler engineers built it; you benefit whenever you   |
+|       | use --release or -O.                                    |
++-------+---------------------------------------------------------+
+| HOW   | rustc emits LLVM IR (CPU-neutral) -> LLVM optimizes it  |
+|       | -> LLVM writes machine code for x86, ARM, WASM and      |
+|       | more.                                                   |
++-------+---------------------------------------------------------+
+
+--- PIPELINE ------------------------------------------------------
+
+   +----------------------------+
+   | 1) Your Rust code (.rs)    |
+   +----------------------------+
+                 v
+   +----------------------------+
+   | 2) rustc checks it: types, |
+   |    ownership, borrowing,   |
+   |    match rules (errors     |
+   |    stop here)              |
+   +----------------------------+
+                 v
+   +----------------------------+
+   | 3) rustc emits LLVM IR     |
+   |    (universal blueprint)   |
+   +----------------------------+
+                 v
+   +----------------------------+
+   | 4) LLVM OPTIMIZES it:      |
+   |    - removes useless work  |
+   |    - inlines small funcs   |
+   |    - unrolls loops         |
+   |    - SIMD: many numbers    |
+   |      per step              |
+   +----------------------------+
+                 v
+   +----------------------------+
+   | 5) LLVM generates machine  |
+   |    code for YOUR CPU       |
+   +----------------------------+
+                 v
+   +----------------------------+
+   | 6) .exe file: the CPU runs |
+   |    it directly             |
+   +----------------------------+
+
+Tip: --release (cargo) or -O (rustc) switches step 4 on.
+Without it, Rust skips most optimizing and is much slower.
+

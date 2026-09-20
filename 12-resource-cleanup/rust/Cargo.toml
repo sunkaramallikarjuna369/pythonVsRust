@@ -1,0 +1,11 @@
+[package]
+name = "resource_cleanup"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "resource_cleanup"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
