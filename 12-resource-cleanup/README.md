@@ -1,120 +1,138 @@
-# 12. Resource Cleanup
+# 12. Making Sure Open Files And Connections Always Get Closed
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about giving back things you borrowed from the computer's
+operating system — open files, network connections, locks, database
+connections — once you're done using them.
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | Giving back what you borrowed from the OS: files,       |
-|       | sockets, locks, database connections.                   |
+| WHAT  | Giving back what you borrowed from the operating system:   |
+|       | open files, network connections, locks, database             |
+|       | connections.                                                   |
 +-------+---------------------------------------------------------+
-| WHY   | Unreleased items cause leaks, locked files and 'too     |
-|       | many open files' errors.                                |
+| WHY   | Not giving these back causes memory to keep filling up,      |
+|       | files that stay locked, and "too many things open at once"   |
+|       | errors.                                                        |
 +-------+---------------------------------------------------------+
-| WHEN  | Whenever you open something that must be closed.        |
+| WHEN  | Any time you open something that needs to be closed          |
+|       | afterwards.                                                    |
 +-------+---------------------------------------------------------+
-| WHERE | File handling, database pools, network code.            |
+| WHERE | Working with files, pools of database connections,            |
+|       | network code.                                                  |
 +-------+---------------------------------------------------------+
-| WHO   | Every developer of long-running programs.               |
+| WHO   | Anyone building programs meant to run for a long time.        |
 +-------+---------------------------------------------------------+
-| HOW   | Python: a 'with' block closes it (or the GC does,       |
-|       | someday). Rust: when the owner leaves scope, Drop runs  |
-|       | automatically and closes it (called RAII).              |
+| HOW   | In Python, wrapping the code in a "with" block closes it      |
+|       | automatically at the end (or, if you forget, Python's         |
+|       | background helper closes it eventually — someday). In Rust,   |
+|       | the moment the one place responsible for it is finished        |
+|       | using it, the closing happens automatically. This is           |
+|       | usually called "RAII" for short.                                |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
-   open()  ---->  use it  ---->  close()   <- must happen, or LEAK
+   open it  ---->  use it  ---->  close it   <- MUST happen, or it leaks
 
-   Python : you write 'with' (or hope the GC closes it someday)
-   Rust   : the owner leaves scope -> Drop closes it, always
-            { let f = File::open("a.txt")?; ... }  <- closed here
+   Python : you write "with" (or hope the background helper closes
+            it for you, eventually)
+   Rust   : the moment the responsible place is done, it's closed —
+            automatically, no matter how you exit that piece of code
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
              PYTHON                              RUST
 +------------------------------+   +------------------------------+
-| 1) Open file / lock /        |   | 1) File::open() gives an     |
-|    connection                |   |    owner value               |
-+------------------------------+   +------------------------------+
-               v                                  v
-+------------------------------+   +------------------------------+
-| 2) Used 'with'? closed at    |   | 2) Owner goes out of         |
-|    end of the block          |   |    scope                     |
-+------------------------------+   +------------------------------+
-               v                                  v
-+------------------------------+   +------------------------------+
-| 3) Forgot 'with'? closed     |   | 3) Drop runs automatically:  |
-|    only when GC frees it     |   |    file closed right there   |
-+------------------------------+   +------------------------------+
-               v                                  |
+| 1) Open a file, a lock, or    |   | 1) Opening a file gives you  |
+|    a connection                |   |    back the ONE responsible   |
++------------------------------+   |    owner of it                 |
+               v                   +------------------------------+
++------------------------------+                  v
+| 2) Used "with"? it closes       |   +------------------------------+
+|    automatically at the end     |   | 2) That owner finishes being |
++------------------------------+   |    used                         |
+               v                   +------------------------------+
++------------------------------+                  v
+| 3) Forgot "with"? it only        |   +------------------------------+
+|    closes once the background   |   | 3) The closing runs           |
+|    helper eventually gets to it |   |    automatically, right at    |
++------------------------------+   |    that exact spot              |
+               v                   +------------------------------+
 +------------------------------+                  |
-| 4) Timing unknown =          |                  |
-|    possible leak             |                  |
+| 4) Timing is unknown = a         |                  |
+|    possible leak                 |                  |
 +------------------------------+                  |
                |                                  |
                v                                  v
-  RESULT: depends on you             RESULT: always closed,
-  remembering                        at a known moment
+  RESULT: depends on you                RESULT: always closed, at
+  remembering to do it right              a known, exact moment
 ```
 
-(Correctness benefit, not a speed test.)
+This is a "does it behave correctly" comparison, not a speed test.
 
-## PART D — verdict
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
+| WHICH ONE SHOULD YOU PICK?                                      |
 +--------+--------------------------------------------------------+
-| RUST   | Better: automatic, always, at a known moment.          |
+| RUST   | Better: it happens automatically, always, at a known      |
+|        | moment.                                                     |
 +--------+--------------------------------------------------------+
-| PYTHON | Fine if you always use 'with'.                         |
+| PYTHON | Fine, as long as you always remember to use "with".        |
 +--------+--------------------------------------------------------+
 ```
 
-## PART E — why Rust wins here (deep dive)
+## Part E — a deeper look at how Rust knows exactly when to close things
 
-RAII (Resource Acquisition Is Initialization) isn't magic — it's the
-compiler mechanically inserting cleanup calls based on a **control-flow
-analysis** it already has to do for ownership tracking.
+This automatic closing isn't magic — the compiler mechanically plants
+the "close this" instruction based on the same kind of check it
+already does for memory (see
+[02-memory-management](../02-memory-management)).
 
 ```
 +-----------------------------------------------------------------+
-| HOW THE COMPILER DECIDES WHERE TO INSERT THE CLOSE               |
+| HOW THE COMPILER DECIDES WHERE TO PLANT THE "CLOSE THIS" STEP     |
 +-----------------------------------------------------------------+
-| fn write_scoped(path: &str) -> io::Result<()> {                  |
-|     let mut f = File::create(path)?;   // owner: f               |
-|     f.write_all(b"...")?;              // early-return point!    |
-|     Ok(())                                                       |
-| }   // <- normal exit                                            |
-|                                                                   |
-| The compiler finds EVERY path out of this function:               |
-|   path 1: `?` on File::create fails      -> f never created      |
-|   path 2: `?` on write_all fails         -> f WAS created        |
-|   path 3: function returns Ok(())        -> f WAS created        |
-|                                                                   |
-| For every path where `f` was created, it inserts a call to        |
-| `Drop::drop(&mut f)` (which closes the file handle) right         |
-| before that exit -  this is baked into the compiled machine code, |
-| not decided at run time.                                          |
+| A function that opens a file, writes to it, and might fail at      |
+| either step:                                                        |
+|                                                                       |
+|   open the file          // this spot now owns the file             |
+|   write to it            // this step could also fail!               |
+|   report success                                                     |
+|   // <- normal finish                                                |
+|                                                                        |
+| The compiler works out EVERY single way this function could end:     |
+|   way 1: opening the file failed        -> file was never opened     |
+|   way 2: writing to it failed            -> file WAS opened           |
+|   way 3: it finished successfully         -> file WAS opened           |
+|                                                                        |
+| For every single ending where the file WAS opened, the compiler       |
+| plants a "close this file" step right before that ending — this        |
+| is baked into the finished program itself, not decided while the       |
+| program happens to be running.                                         |
 +-----------------------------------------------------------------+
 ```
 
-This is why it beats "remember to use `with`": the guarantee is
-enforced by the compiler examining every exit edge of the function
-(normal return, early return, even a panic unwinding through the
-frame), not by a human remembering a keyword. In Python, `with` gives
-you the same guarantee *if you write it* — but a plain `f = open(...)`
-with no `with` compiles and runs fine, and the file only closes
-whenever (if ever) the garbage collector gets around to it, or the
-process exits.
+This is why it's more reliable than "remember to use `with`": the
+guarantee comes from the compiler examining every single way a piece
+of code could end (finishing normally, failing partway through, even
+an unexpected crash partway through), not from a person remembering to
+type a particular word. In Python, `with` gives you the same guarantee
+— but only if you actually write it. Opening a file without `with` is
+still perfectly valid Python that runs without complaint — the file
+just stays open until the background helper eventually notices, if it
+ever gets around to it before the program ends anyway.
 
-## Run it
+## Try it yourself
 
 ```bash
 python python/resource_cleanup.py
@@ -125,6 +143,6 @@ cd rust
 cargo run --release
 ```
 
-Both write a temp file and report when it was closed — the Rust
-version's `Drop` runs the instant the function returns; nothing to
-forget.
+Both programs write to a temporary file and report when it was
+closed — in Rust, the closing happens automatically the instant the
+function finishes, with nothing to remember.

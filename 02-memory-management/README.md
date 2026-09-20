@@ -1,129 +1,151 @@
-# 2. Memory Management
+# 2. How Each One Frees Up Memory It No Longer Needs
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about how a program gets a piece of computer memory for its
+data, and how it gives that memory back when it's done with it.
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | How a program gets memory for its data and gives it     |
-|       | back when finished.                                     |
+| WHAT  | How a program gets memory for its data, and gives it    |
+|       | back once it's finished with it.                        |
 +-------+---------------------------------------------------------+
-| WHY   | Never giving it back = leak (memory grows until a       |
-|       | crash). Giving it back too early = crash or corrupted   |
-|       | data. Cleaning at bad moments = pauses.                 |
+| WHY   | Never giving memory back means the program keeps using  |
+|       | more and more of it until it crashes (this is called a  |
+|       | "leak"). Giving it back too early causes crashes or      |
+|       | broken data. Cleaning up at the wrong moment causes the  |
+|       | program to freeze for a split second.                    |
 +-------+---------------------------------------------------------+
-| WHEN  | Every time you create a list, string or object, which   |
-|       | is constantly.                                          |
+| WHEN  | Every single time you create a list, a piece of text, or |
+|       | any other piece of data — which is constantly.           |
 +-------+---------------------------------------------------------+
-| WHERE | Every program. It matters most in long-running services |
-|       | and latency-sensitive systems.                          |
+| WHERE | Every program, but it matters most in programs that run  |
+|       | for a long time, or that need to respond instantly.      |
 +-------+---------------------------------------------------------+
-| WHO   | The runtime (Python) or the compiler (Rust) does the    |
-|       | work; you feel it as pauses, leaks or speed.            |
+| WHO   | Python's own background helper does this work for you    |
+|       | while the program runs. In Rust, the compiler works it   |
+|       | out ahead of time. Either way, you notice it as freezes, |
+|       | leaks, or plain speed.                                    |
 +-------+---------------------------------------------------------+
-| HOW   | Python counts who uses each object and runs a garbage   |
-|       | collector (GC) for cycles. Rust gives each value ONE    |
-|       | owner and frees it when the owner leaves scope.         |
+| HOW   | Python keeps a count of how many places are using each   |
+|       | piece of data, plus a background helper (the "garbage    |
+|       | collector") that cleans up trickier leftover cases.      |
+|       | Rust decides, while checking your code (before the       |
+|       | program even runs), exactly ONE place that is            |
+|       | responsible for each piece of data, and frees it the      |
+|       | instant that place is done with it.                       |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
-   STACK (your variables)          HEAP (the big data)
-   +--------------+                +------------------------+
+   YOUR VARIABLES                  THE ACTUAL DATA (bigger stuff
+   (small, quick storage)          lives in a separate area called
+   +--------------+                the "heap")
    | name  -------+--------------->| "hello world ..."      |
    +--------------+                +------------------------+
 
-   Who gives the heap box back, and WHEN?
-   Python : when nothing points at it any more (+ GC sweeps)
-   Rust   : when its single owner leaves scope (known at compile)
+   Who gives that memory back, and WHEN?
+   Python : once nothing is pointing at it anymore (checked now and then)
+   Rust   : the moment the one responsible place is done with it
+            (worked out ahead of time, before the program runs)
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
              PYTHON                              RUST
 +------------------------------+   +------------------------------+
-| 1) Create object             |   | 1) A value has ONE owner     |
-|    (refcount = 1)            |   +------------------------------+
+| 1) Create some data          |   | 1) One place in the code is  |
+|    (start a usage counter    |   |    the ONE owner of this     |
+|    at 1)                     |   |    piece of data             |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 2) Every time it's used      |   | 2) That place finishes using |
+|    somewhere else, the       |   |    the data                  |
+|    counter goes up or down   |   +------------------------------+
 +------------------------------+                  v
                v                   +------------------------------+
-+------------------------------+   | 2) Owner goes out of         |
-| 2) Every use changes the     |   |    scope                     |
-|    refcount up / down        |   +------------------------------+
-+------------------------------+                  v
-               v                   +------------------------------+
-+------------------------------+   | 3) Compiler already put      |
-| 3) Refcount 0 = freed.       |   |    the free() right there    |
-|    Cycles need the GC        |   +------------------------------+
-+------------------------------+                  |
++------------------------------+   | 3) The compiler already      |
+| 3) Counter hits 0: freed.    |   |    decided, ahead of time,   |
+|    Trickier cases need the   |   |    to free the memory right  |
+|    background helper         |   |    at this exact spot         |
++------------------------------+   +------------------------------+
                v                                  |
 +------------------------------+                  |
-| 4) GC scans now and then     |                  |
-|    = small pauses            |                  |
+| 4) The background helper     |                  |
+|    checks now and then =     |                  |
+|    tiny pauses                |                  |
 +------------------------------+                  |
                |                                  |
                v                                  v
-  RESULT: automatic but              RESULT: no GC, no
-  runtime cost + pauses              pauses, freed on time
+  RESULT: automatic, but             RESULT: no background
+  costs time + causes pauses         helper, no pauses, memory
+                                     freed at the right moment
 ```
 
-Measured (3M create+drop of small lists): 0.853 s vs 0.042 s = ~20x
+In a real test: creating and clearing out 3 million small lists took
+0.853 seconds in Python and 0.042 seconds in Rust — about 20 times
+faster.
 
-## PART D — verdict
-
-```
-+-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
-+--------+--------------------------------------------------------+
-| RUST   | Better when steady, predictable latency matters (no GC |
-|        | pauses).                                               |
-+--------+--------------------------------------------------------+
-| PYTHON | Fine for most apps: automatic and easy, pauses rarely  |
-|        | matter.                                                |
-+--------+--------------------------------------------------------+
-```
-
-## PART E — why Rust wins here (deep dive)
-
-Ownership isn't a convention Rust programmers follow — it's a proof
-the compiler constructs and checks before it will emit any code.
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHAT THE BORROW CHECKER PROVES, STATICALLY, PER VARIABLE         |
+| WHICH ONE SHOULD YOU PICK?                                      |
++--------+--------------------------------------------------------+
+| RUST   | Better when steady, predictable speed matters and you  |
+|        | can't afford random tiny pauses.                       |
++--------+--------------------------------------------------------+
+| PYTHON | Fine for most apps — it's automatic and easy, and the  |
+|        | pauses rarely matter in practice.                       |
++--------+--------------------------------------------------------+
+```
+
+## Part E — a deeper look at why Rust does this without pausing
+
+Rust's compiler doesn't just follow a rule about memory — it actually
+proves, before your program ever runs, exactly where each piece of
+data should be cleaned up:
+
+```
 +-----------------------------------------------------------------+
-| fn create_and_drop(count: u64) {                                  |
+| WHAT THE RUST COMPILER WORKS OUT, JUST BY READING YOUR CODE       |
++-----------------------------------------------------------------+
+| fn create_and_drop(count) {                                       |
 |     for _ in 0..count {                                           |
-|         let mut data = vec![0, 1, 2, 3, 4];  // data's region     |
-|         data.push(5);                        //   starts here     |
-|     } // <- compiler knows: no reference to `data` escapes this   |
-|       //    block, so it inserts `drop(data)` RIGHT HERE, at      |
-|       //    compile time, as a plain function call in the         |
-|       //    generated machine code.                                |
+|         create some data here      // this spot "owns" the data   |
+|         add a bit more to it                                      |
+|     } // <- the compiler can see nothing outside this loop uses   |
+|       //    that data anymore, so it plants the "free this        |
+|       //    memory" instruction RIGHT HERE, permanently, as       |
+|       //    part of the finished program.                          |
 | }                                                                  |
 +-----------------------------------------------------------------+
-| No runtime object carries a "how many owners do I have?" counter. |
-| The answer (always exactly one) was proven before compilation      |
-| finished, so there is nothing left to track while the program runs.|
+| Nothing has to keep a running counter while the program is        |
+| actually working — the answer was already worked out ahead of     |
+| time, so there's nothing left to track while it runs.              |
 +-----------------------------------------------------------------+
 ```
 
-Compare what CPython must do for the equivalent Python loop: every
-`PyObject` carries a `refcount` field in its header. Creating the list
-sets it to 1; appending doesn't change it; `del data` (or the name
-going out of scope) decrements it, and *only if it's now zero* does
-the allocator reclaim it — a runtime check on every single
-create/reassign/delete, plus a separate cyclic garbage collector that
-must periodically pause and walk the object graph to catch reference
-cycles the counter can't resolve on its own (e.g., two objects
-pointing at each other). Rust's ownership graph is acyclic by
-construction — the borrow checker rejects the patterns that would
-create an uncollectable cycle — so it needs no such sweep at all.
+Compare that to what Python has to do: every piece of data carries a
+small hidden counter. Creating it sets the counter to 1. Deleting it
+(or letting the variable go out of use) lowers the counter, and only
+once it reaches 0 does Python actually free the memory — this check
+happens on every single create, reassign, and delete, while the
+program is running. On top of that, Python also runs a background
+sweep every so often (the "garbage collector") to catch a special
+tricky case: two pieces of data that both point at each other, so
+neither one's counter ever reaches 0 on its own. Rust avoids this
+entire problem because the compiler simply won't allow you to build
+that "pointing at each other" situation in the first place — so
+there's no background sweep needed at all.
 
-## Run it
+## Try it yourself
 
 ```bash
 python python/memory_management.py
@@ -134,5 +156,5 @@ cd rust
 cargo run --release
 ```
 
-Both create and drop 3,000,000 small collections in a loop and print
-the elapsed time.
+Both programs create and then throw away 3,000,000 small pieces of
+data in a loop, and print how long that took.

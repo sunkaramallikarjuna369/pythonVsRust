@@ -1,130 +1,142 @@
-# 8. Type System (Enum + Match)
+# 8. Making Sure Every Possible Case Is Actually Handled
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about how strictly a language checks what kind of data a
+variable holds, and what you're allowed to do with it. A "list of
+every possible case something could be" (for example: a shape is
+either a circle, a rectangle, or a triangle, and nothing else) is
+sometimes called an "enum" for short.
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | Rules about what kind of data each variable holds and   |
-|       | what you may do with it. An enum lists every possible   |
-|       | case of something.                                      |
+| WHAT  | Rules about what kind of data each variable can hold,     |
+|       | and what you're allowed to do with it. A "list of every   |
+|       | possible case" spells out all the options up front.        |
 +-------+---------------------------------------------------------+
-| WHY   | Catches mistakes early and makes wrong states           |
-|       | impossible to build.                                    |
+| WHY   | Catches mistakes early, and makes it impossible to build   |
+|       | a piece of data that isn't one of the allowed cases.        |
 +-------+---------------------------------------------------------+
-| WHEN  | While you write code (compile time in Rust; when the    |
-|       | line runs in Python).                                    |
+| WHEN  | While you write code, in Rust's case — checked before the  |
+|       | program even runs. In Python, only when that exact line    |
+|       | of code actually runs.                                      |
 +-------+---------------------------------------------------------+
-| WHERE | Domain models, state machines, protocol parsers,        |
-|       | claim/order lifecycles.                                  |
+| WHERE | Business rules, step-by-step processes, reading structured |
+|       | messages, order/claim lifecycles.                           |
 +-------+---------------------------------------------------------+
-| WHO   | Teams with large, long-lived code, and anyone           |
-|       | refactoring.                                             |
+| WHO   | Teams with large, long-lasting code, and anyone changing    |
+|       | old code later.                                              |
 +-------+---------------------------------------------------------+
-| HOW   | Rust checks types and demands that every enum case is   |
-|       | handled, before the program exists. Python checks only  |
-|       | when the line runs (hints + mypy are optional).          |
+| HOW   | Rust checks types AND demands that every single listed      |
+|       | case is actually dealt with, before the program even        |
+|       | exists. Python only checks things as each line actually      |
+|       | runs (extra tools can check ahead of time, but they're       |
+|       | optional).                                                   |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
-   enum Shape  =  exactly ONE of these:
+   A Shape is EXACTLY ONE of these, and nothing else:
         +--------+     +------+     +----------+
         | Circle |     | Rect |     | Triangle |
         +--------+     +------+     +----------+
 
-   match shape { Circle => ..,  Rect => ..,  Triangle => .. }
-   Rust asks: is EVERY box handled?  If not: compile error.
+   When you handle a shape, Rust asks: "did you cover EVERY box?"
+   If not: the program won't build at all.
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
              PYTHON                              RUST
 +------------------------------+   +------------------------------+
-| 1) shape = {'type': 'tri'}   |   | 1) enum Shape { Circle,      |
-+------------------------------+   |    Rect, Triangle }          |
+| 1) shape = {"type": "tri"}   |   | 1) A shape is EXACTLY one of |
++------------------------------+   |    Circle, Rect, or Triangle  |
                v                   +------------------------------+
 +------------------------------+                  v
-| 2) if / elif chain,          |   +------------------------------+
-|    forgot the 'tri' case     |   | 2) match MUST cover          |
-+------------------------------+   |    every variant             |
+| 2) A chain of "if this,      |   +------------------------------+
+|    else if that" checks —     |   | 2) Handling a shape MUST      |
+|    accidentally forgot the    |   |    cover every listed case    |
+|    triangle case               |   +------------------------------+
++------------------------------+                  v
+               v                   +------------------------------+
++------------------------------+   | 3) Forgot one case? The       |
+| 3) Quietly returns "nothing"  |   |    program simply won't       |
++------------------------------+   |    build                       |
                v                   +------------------------------+
 +------------------------------+                  v
-| 3) Silently returns None     |   +------------------------------+
-+------------------------------+   | 3) Missing one =             |
-               v                   |    compile ERROR             |
-+------------------------------+   +------------------------------+
-| 4) Bug shows up later,       |                  v
-|    far from the cause        |   +------------------------------+
-+------------------------------+   | 4) Add a variant: every      |
-               |                   |    match is flagged          |
+| 4) The bug only shows up      |   +------------------------------+
+|    later, far from where it   |   | 4) Add a new shape later:     |
+|    was actually caused         |   |    every place handling       |
++------------------------------+   |    shapes gets flagged          |
                |                   +------------------------------+
                |                                  |
                v                                  v
-  RESULT: mistakes hide              RESULT: illegal states
-  until runtime                      can't be built
+  RESULT: mistakes stay hidden        RESULT: it's simply not
+  until the program is running        possible to forget a case
 ```
 
-Measured (5M area() calls): 0.67 s vs 0.006 s.
+In a real test: calculating the area of 5,000,000 shapes took 0.67
+seconds in Python and only 0.006 seconds in Rust.
 
-## PART D — verdict
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
+| WHICH ONE SHOULD YOU PICK?                                      |
 +--------+--------------------------------------------------------+
-| RUST   | Better for large or critical code where a forgotten    |
-|        | case is costly.                                        |
+| RUST   | Better for large or important code, where forgetting a  |
+|        | case would be costly.                                    |
 +--------+--------------------------------------------------------+
-| PYTHON | Fine for scripts and prototypes; add type hints for    |
-|        | bigger code.                                           |
+| PYTHON | Fine for quick scripts and early drafts; add extra type  |
+|        | checking tools once the code grows bigger.                |
 +--------+--------------------------------------------------------+
 ```
 
-## PART E — why Rust wins here (deep dive)
+## Part E — a deeper look at how Rust actually checks "every case is covered"
 
-The benefit isn't just "Rust checks types" — it's a specific compiler
-pass called **exhaustiveness checking**, run on every `match`:
+This isn't just Rust "being strict" — it's a specific, automatic check
+the compiler runs every time you handle one of these "exactly one of
+these options" values:
 
 ```
 +-----------------------------------------------------------------+
-| WHAT THE COMPILER ACTUALLY DOES WITH `match shape { ... }`      |
+| WHAT THE COMPILER ACTUALLY DOES WHEN YOU HANDLE A SHAPE           |
 +-----------------------------------------------------------------+
-| 1) Look up Shape's definition:                                  |
-|      Shape = Circle(f64) | Rect(f64,f64) | Triangle(f64,f64)    |
-|                                                                   |
-| 2) Build the set of "constructors" that must be covered:        |
-|      { Circle, Rect, Triangle }                                 |
-|                                                                   |
-| 3) Walk your match arms, crossing each one off the set:         |
-|      Circle => .. ✓        Rect => .. ✓        Triangle => ??   |
-|                                                                   |
-| 4) Set not empty at the end?                                    |
-|      -> error[E0004]: non-exhaustive patterns: `Triangle` not   |
-|         covered.  COMPILATION STOPS. The binary is never built. |
+| 1) Look up the full, official list of what a Shape can be:        |
+|      Circle, Rect, Triangle — and nothing else                    |
+|                                                                     |
+| 2) Go through your code's handling of shapes, and cross each      |
+|    case off the list as it finds it handled:                       |
+|      Circle: handled ✓     Rect: handled ✓     Triangle: ??       |
+|                                                                     |
+| 3) Anything left un-crossed at the end?                            |
+|      -> stop right there and report exactly which case was         |
+|         missed. The program is never built at all.                 |
 +-----------------------------------------------------------------+
 ```
 
-Why Python can't do this for free: `shape["type"] == "tri"` is a
-string comparison against a `dict`. Nothing in the language declares
-"these are ALL the possible shapes" — so there is no fixed set for a
-checker to compare your `if/elif` chain against. The list of valid
-cases only exists in the programmer's head (or a comment), and heads
-forget one case eventually.
+Python can't do this same check for free, because `shape["type"] ==
+"triangle"` is just comparing plain text against a plain dictionary.
+Nothing in the language ever declares "these are ALL the shapes that
+will ever exist" — so there's no official list for anything to check
+your chain of "if this, else if that" against. That official list only
+lives in the programmer's memory (or maybe a comment), and memory
+fades.
 
-The second-order effect matters more than the first bug: add a 4th
-variant, `Shape::Square`, and **every existing `match` on `Shape` in
-the whole codebase** — not just this one — is re-checked and flagged
-if it doesn't handle `Square`. Python's `if/elif` chains scattered
-across the codebase get no such re-check; each one silently keeps
-"working" (returning `None` or a wrong default) until something
-notices the wrong output in production.
+The bigger payoff shows up later: add a 4th shape, say `Square`, and
+Rust will recheck *every single place in the whole project* that
+handles shapes, and flag every one that doesn't yet handle `Square`
+too. Python's scattered "if this, else if that" chains get no such
+recheck — each one keeps quietly "working" (returning nothing, or a
+wrong default) until someone notices the wrong output, possibly long
+after the new shape was added.
 
-## Run it
+## Try it yourself
 
 ```bash
 python python/shapes.py
@@ -135,6 +147,6 @@ cd rust
 cargo run --release
 ```
 
-Both compute the area of 5,000,000 mixed shapes; the Python version
-also demonstrates the buggy `if/elif` chain silently returning `None`
-for the forgotten `triangle` case.
+Both programs calculate the total area of 5,000,000 mixed shapes; the
+Python version also shows the buggy version quietly returning
+"nothing" for the shape type it forgot to handle.

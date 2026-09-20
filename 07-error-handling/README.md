@@ -1,134 +1,147 @@
-# 7. Error Handling
+# 7. Handling Things That Go Wrong
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about how a program reports and reacts when something fails —
+bad input, a missing file, the internet being down.
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | How a program reports and reacts when something fails   |
-|       | (bad input, missing file, network down).                |
+| WHAT  | How a program reports and reacts when something fails    |
+|       | (bad input, a missing file, the network being down).      |
 +-------+---------------------------------------------------------+
-| WHY   | An unhandled failure crashes the program. A hidden      |
-|       | failure gives wrong results.                            |
+| WHY   | A failure nobody deals with crashes the program. A       |
+|       | failure that gets silently ignored gives wrong results.    |
 +-------+---------------------------------------------------------+
-| WHEN  | Any operation that can fail: parsing, files, network,   |
-|       | databases.                                              |
+| WHEN  | Any action that can fail: reading text as a number,       |
+|       | opening files, talking to the network, talking to a        |
+|       | database.                                                   |
 +-------+---------------------------------------------------------+
-| WHERE | Pipelines, services, command-line tools.                |
+| WHERE | Data pipelines, background services, command-line tools.   |
 +-------+---------------------------------------------------------+
-| WHO   | Every developer. Users feel it as crashes.              |
+| WHO   | Every developer. Users experience this as crashes.         |
 +-------+---------------------------------------------------------+
-| HOW   | Python throws exceptions (not shown in the function     |
-|       | signature). Rust returns a Result: Ok(value) or         |
-|       | Err(reason), which you handle or pass on with ?.        |
+| HOW   | Python "throws" a special error object that isn't          |
+|       | mentioned anywhere in the function's own description.      |
+|       | Rust functions instead openly return either "it worked,     |
+|       | here's the answer" or "it failed, here's why" — and you     |
+|       | must deal with one or the other.                            |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
-   Python (exception):  parse() --X--> raises an error
-                        it flies UP the call stack to a try/except
-                        catches it (or the program crashes)
+   Python's way:  try to read "abc" as a number --X--> throws an error
+                  the error flies UP through the program looking for
+                  a spot that catches it (or the program crashes)
 
-   Rust (Result):       parse() ------> returns Ok(42) / Err("bad")
-                        the caller matches on it, or uses ?
+   Rust's way:    try to read "abc" as a number ------> comes back
+                  as either "worked: 42" or "failed: bad text"
+                  the caller must check which one it got
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
              PYTHON                              RUST
 +------------------------------+   +------------------------------+
-| 1) int('abc')                |   | 1) "abc".parse::<u32>()      |
+| 1) Try to turn "abc" into a  |   | 1) Try to turn "abc" into a  |
+|    number                     |   |    number                     |
 +------------------------------+   +------------------------------+
                v                                  v
 +------------------------------+   +------------------------------+
-| 2) Raises ValueError         |   | 2) Returns a Result:         |
-|    (not visible in the       |   |    Ok(n) or Err(e)           |
-|    function signature)       |   +------------------------------+
-+------------------------------+                  v
-               v                   +------------------------------+
-+------------------------------+   | 3) Caller must match it      |
-| 3) Flies up the call stack   |   |    or pass it on with ?      |
-|    to a try/except           |   +------------------------------+
-+------------------------------+                  v
-               v                   +------------------------------+
-+------------------------------+   | 4) Error is just a normal    |
-| 4) None found: program       |   |    value, no unwinding       |
-|    CRASHES                   |   +------------------------------+
-+------------------------------+                  |
+| 2) Throws an error (this      |   | 2) Comes back as either       |
+|    fact isn't written         |   |    "worked" or "failed" —     |
+|    anywhere in the function's |   |    right there in what the    |
+|    own description)            |   |    function returns            |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) It flies up through the    |   | 3) The caller must check it,  |
+|    program looking for a       |   |    or pass it further up on   |
+|    "catch" spot                |   |    purpose                     |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 4) No "catch" spot found:     |   | 4) A failure is just a         |
+|    the program CRASHES         |   |    normal, plain value — no    |
+|                                 |   |    special handling needed      |
++------------------------------+   +------------------------------+
                |                                  |
                v                                  v
-  RESULT: slow when errors           RESULT: fast, explicit,
-  are common                         cannot be ignored
+  RESULT: slow when failures          RESULT: fast, obvious, and
+  happen a lot                         impossible to just ignore
 ```
 
-Measured (1M bad of 2M values): 1.020 s vs 0.011 s = ~90x.
+In a real test: parsing 2,000,000 values where half were bad took
+1.020 seconds in Python and only 0.011 seconds in Rust — about 90
+times faster.
 
-## PART D — verdict
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
+| WHICH ONE SHOULD YOU PICK?                                      |
 +--------+--------------------------------------------------------+
-| RUST   | Better when errors are common (about 90x in my test)   |
-|        | or must never be missed.                               |
+| RUST   | Better when failures happen often (about 90 times       |
+|        | faster in this test), or when a missed failure would    |
+|        | be very costly.                                          |
 +--------+--------------------------------------------------------+
-| PYTHON | Fine and readable when errors are rare.                |
+| PYTHON | Fine and easy to read when failures are rare.            |
 +--------+--------------------------------------------------------+
 ```
 
-## PART E — why Rust wins here (deep dive)
+## Part E — a deeper look at why handling failures is so much cheaper in Rust
 
-The 90x isn't really "exceptions are slow" in the abstract — it's that
-Python's exceptions and Rust's `Result` pay for fundamentally different
-amounts of machinery on the *success* path and the *failure* path.
+This isn't really about Python's error-throwing being "slow" in
+general — it's that Python and Rust do very different amounts of work
+on the failure path.
 
 ```
 +-----------------------------------------------------------------+
-| WHAT A PYTHON EXCEPTION COSTS WHEN "abc" FAILS TO PARSE           |
+| WHAT PYTHON DOES WHEN "abc" FAILS TO BECOME A NUMBER              |
 +-----------------------------------------------------------------+
-| int("abc")                                                        |
-|   -> raises ValueError: allocate an exception object              |
-|   -> capture a traceback: walk and record the ENTIRE call stack   |
-|      (every frame, every line number) into a linked structure     |
-|   -> unwind the C stack looking for a matching `except` handler,  |
-|      running `finally` blocks along the way                       |
-|   -> the `except ValueError:` handler finally catches it           |
+| 1) create a brand new error object to describe what went wrong   |
+| 2) walk the ENTIRE chain of function calls that led here, and    |
+|    write down every single step of it, in case something later   |
+|    wants to print it                                              |
+| 3) unwind back out through that whole chain of function calls,   |
+|    looking for a spot that catches this kind of error, running    |
+|    any cleanup code it passes along the way                       |
+| 4) a "catch" spot finally handles it                              |
 +-----------------------------------------------------------------+
-| Cost is proportional to how DEEP the call stack is - a stack       |
-| search happens on every single failure.                            |
+| The deeper the chain of function calls, the more work step 2      |
+| and step 3 have to do — and this happens EVERY single time         |
+| something fails.                                                   |
 +-----------------------------------------------------------------+
 
 +-----------------------------------------------------------------+
-| WHAT `"abc".parse::<u32>()` COSTS WHEN IT FAILS                  |
+| WHAT RUST DOES WHEN THE SAME THING FAILS                          |
 +-----------------------------------------------------------------+
-| fn parse(s: &str) -> Result<u32, ParseIntError> {                 |
-|     ...                                                            |
-|     Err(ParseIntError { kind: InvalidDigit })   // just a value!  |
-| }                                                                   |
+| The function just returns a plain value saying "this failed,      |
+| here's why" — nothing more.                                        |
 |                                                                     |
-| match v.parse::<u32>() {                                           |
-|     Ok(_)  => ok += 1,                                             |
-|     Err(_) => bad += 1,   // a normal branch, like `if`             |
-| }                                                                   |
-+-----------------------------------------------------------------+
-| No stack walk, no unwinding, no separate control-flow mechanism -  |
-| `Result` IS the return value, checked with an ordinary branch.     |
+| Checking it back at the caller is just an ordinary comparison,     |
+| exactly like checking "is this number bigger than zero?" — no      |
+| walking back through anything, no writing down every step taken   |
+| to get here.                                                        |
 +-----------------------------------------------------------------+
 ```
 
-This is also why Rust's `?` operator is "free" in the same sense: `x?`
-desugars to "if `x` is `Err`, `return Err(...)` immediately" — a
-regular conditional jump, not a throw. Python's exception mechanism
-has to stay general enough to unwind through arbitrary call depths and
-run cleanup code along the way, which is powerful but means every
-`raise` pays for a stack walk whether the catcher is one frame up or
-fifty.
+Because a Rust "failed" value is just a normal piece of data — not a
+special event that has to travel back up through the program looking
+for somewhere to land — passing a failure up to whoever called your
+function is also just a normal, instant return, not a special and
+costly operation. Python's approach is more flexible (it can run
+cleanup code no matter how far up the chain of calls the "catch" spot
+is), but that flexibility is exactly what makes every single failure
+more expensive to report, even when the "catch" spot is right next
+door.
 
-## Run it
+## Try it yourself
 
 ```bash
 python python/error_handling.py
@@ -139,6 +152,5 @@ cd rust
 cargo run --release
 ```
 
-Both parse 2,000,000 strings where half are valid integers and half
-are not, counting `ok`/`bad` and timing the whole pass — Python pays
-per-exception cost, Rust's `Result` does not.
+Both programs try to read 2,000,000 pieces of text as whole numbers,
+where exactly half of them are not valid numbers.

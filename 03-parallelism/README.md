@@ -1,144 +1,154 @@
-# 3. Parallelism
+# 3. Doing Several Things At Once On Different CPU Cores
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about splitting up work so different parts of it run at the
+exact same time, on different parts of the processor (most modern
+computer chips have several separate "cores" that can each work
+independently — like several workers instead of just one).
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | Doing several pieces of work at the very same moment on |
-|       | different CPU cores.                                    |
+| WHAT  | Doing several pieces of work at the exact same moment,   |
+|       | on different CPU cores.                                  |
 +-------+---------------------------------------------------------+
-| WHY   | Modern CPUs have many cores. A single thread uses only  |
-|       | one and leaves the rest idle.                           |
+| WHY   | Modern computer chips have many cores. Using just one of |
+|       | them leaves all the others sitting idle, doing nothing.  |
 +-------+---------------------------------------------------------+
-| WHEN  | Big jobs that can be split into independent pieces.     |
+| WHEN  | Big jobs that can be broken into smaller, independent    |
+|       | pieces.                                                   |
 +-------+---------------------------------------------------------+
-| WHERE | Batch ETL, image/video processing, big aggregations.    |
+| WHERE | Processing huge batches of data, working on images or    |
+|       | video, adding up big piles of numbers.                    |
 +-------+---------------------------------------------------------+
-| WHO   | Anyone with a multi-core machine and heavy compute.     |
+| WHO   | Anyone with a multi-core computer and a heavy job to run. |
 +-------+---------------------------------------------------------+
-| HOW   | Split the data into chunks, give each core a chunk,     |
-|       | combine the results. Python's GIL lets only one thread  |
-|       | run Python code at a time; Rust has no GIL.             |
+| HOW   | Split the data into chunks, give each core its own       |
+|       | chunk, then combine the results. In Python, a built-in    |
+|       | rule (called the "GIL") only allows ONE line of Python    |
+|       | code to run at a time, no matter how many cores you have. |
+|       | Rust has no such rule.                                    |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
-   ONE thread : Core 1 [########################]
+   ONE core doing everything : Core 1 [########################]
 
-   FOUR threads on four cores (ideal case):
+   FOUR cores sharing the work (best case):
                 Core 1 [######]
                 Core 2 [######]
                 Core 3 [######]
-                Core 4 [######]        ~4x faster
+                Core 4 [######]        about 4 times faster
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
              PYTHON                              RUST
 +------------------------------+   +------------------------------+
-| 1) Start 4 threads           |   | 1) Start 4 threads           |
+| 1) Start 4 separate lines    |   | 1) Start 4 separate lines    |
+|    of work ("threads")       |   |    of work ("threads")       |
 +------------------------------+   +------------------------------+
                v                                  v
 +------------------------------+   +------------------------------+
-| 2) GIL: only ONE thread      |   | 2) No GIL: all threads run   |
-|    runs Python code at       |   |    on all CPU cores          |
-|    a time                    |   +------------------------------+
-+------------------------------+                  v
-               v                   +------------------------------+
-+------------------------------+   | 3) Rayon: .par_iter()        |
-| 3) The other 3 wait          |   |    splits and balances       |
-|    (no CPU speed-up)         |   |    the work for you          |
+| 2) Only ONE of them is       |   | 2) No such limit: all 4 can  |
+|    allowed to run Python     |   |    run on all 4 CPU cores    |
+|    code at any one moment    |   |    at the same time           |
++------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) The other 3 just wait     |   | 3) A helper tool ("Rayon")   |
+|    their turn (no real       |   |    splits the work up and    |
+|    speed-up)                 |   |    balances it for you        |
 +------------------------------+   +------------------------------+
                v                                  |
 +------------------------------+                  |
-| 4) Workaround:               |                  |
-|    multiprocessing = 4       |                  |
-|    processes, copy data,     |                  |
-|    more RAM                  |                  |
+| 4) Workaround: use separate  |                  |
+|    full copies of the        |                  |
+|    program instead (this     |                  |
+|    uses more memory)          |                  |
 +------------------------------+                  |
                |                                  |
                v                                  v
-  RESULT: threads ~1x,               RESULT: ~N x on N cores,
-  processes ~N x minus cost          one-line change
+  RESULT: threads barely help,       RESULT: close to 4 times
+  separate copies help but cost      faster, with a one-line change
+  more memory
 ```
 
-Not measurable on a 1-core sandbox: run the parallel programs on your
-own multi-core PC to see the real speed-up.
+This kind of speed-up depends on your own computer's number of cores,
+so it isn't shown as a single measured number here — try the programs
+on your own multi-core computer to see it for yourself.
 
-## PART D — verdict
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
+| WHICH ONE SHOULD YOU PICK?                                      |
 +--------+--------------------------------------------------------+
-| RUST   | Better for CPU work: one line with Rayon, and the      |
-|        | compiler checks it is safe.                            |
+| RUST   | Better for heavy calculations: one small change gets   |
+|        | real speed-up, and the compiler double-checks it's     |
+|        | safe.                                                   |
 +--------+--------------------------------------------------------+
-| PYTHON | Fine for I/O work, or use multiprocessing / libraries  |
-|        | that release the GIL.                                  |
+| PYTHON | Fine for work that spends most of its time waiting     |
+|        | (like network calls), or use separate full program     |
+|        | copies for heavy calculations.                          |
 +--------+--------------------------------------------------------+
 ```
 
-## PART E — why Rust wins here (deep dive)
+## Part E — a deeper look at why Rust can safely split work like this
 
-"No GIL" is the headline, but the reason Rust *can* safely have no GIL
-— while C famously needs enormous discipline to avoid data races
-without one — is two marker traits the compiler checks for you.
+The reason Python needs that "only one line of code at a time" rule,
+while Rust doesn't, comes down to what each language's compiler is
+willing to check for you before running anything:
 
 ```
 +-----------------------------------------------------------------+
-| Send AND Sync: THE TWO TRAITS THAT REPLACE THE GIL               |
+| TWO CHECKS THE RUST COMPILER RUNS INSTEAD OF A "ONE AT A TIME"   |
+| RULE                                                              |
 +-----------------------------------------------------------------+
-| Send : "a value of this type can be MOVED to another thread"     |
-| Sync : "a reference to this type can be SHARED across threads"   |
+| Check 1: "is it OK to hand this piece of data to another         |
+|           thread?"                                                |
+| Check 2: "is it OK for two threads to look at this piece of data |
+|           at the same time?"                                     |
 |                                                                    |
-| thread::spawn(move || { ... })                                   |
-|   requires every captured value to be Send                       |
-|   -> the compiler checks this at the call site, at compile time  |
-|                                                                    |
-| Types like Rc<T> (non-atomic refcount) are NOT Send.               |
-|   thread::spawn(move || use_rc(rc));  // COMPILE ERROR             |
-|   "Rc<T> cannot be sent between threads safely"                    |
-|                                                                    |
-| Arc<T> (atomic refcount) IS Send + Sync -> compiles fine.          |
+| If you try to hand over a piece of data that ISN'T safe to share, |
+| the program simply won't compile — you get an error message      |
+| pointing at the exact problem, before the program ever runs.      |
 +-----------------------------------------------------------------+
 ```
 
-Rayon's `par_iter()` builds on the same guarantee: it can only split
-your iterator across a thread pool because the compiler has already
-verified every closure it runs is `Send`. The work-stealing scheduler
-then does the scheduling Python's GIL prevents Python threads from
-ever benefiting from: idle worker threads "steal" chunks of remaining
-work from busy ones, keeping all cores fed without any of your code
-managing threads directly.
+A helper tool called "Rayon" builds on top of this: it's only allowed
+to split your work across many threads because the compiler has
+already double-checked that doing so is safe. Idle cores then borrow
+extra pieces of unfinished work from busy ones automatically, so all
+your cores stay busy without you having to manage any of that
+yourself.
 
-Python's GIL exists precisely because CPython's reference-counting GC
-(see [02-memory-management](../02-memory-management)) is *not*
-thread-safe by default — incrementing a plain integer refcount from
-two threads at once is itself a data race. Rather than make every
-object's refcount atomic (which would slow down single-threaded code),
-CPython takes one global lock instead. Rust sidesteps the whole
-dilemma: ownership means there's no shared mutable refcount to
-protect in the first place.
+Python's "only one line of code at a time" rule exists because
+Python's own background memory helper (the hidden usage-counter system
+described in [02-memory-management](../02-memory-management)) isn't
+safe to use from two threads at once — updating a simple counter from
+two places at the same time can itself go wrong. Rather than making
+every single counter update safe on its own (which would slow down
+every single-threaded program too), Python instead just locks the
+whole thing so only one thread can run code at a time. Rust avoids
+this whole problem because there's no shared usage-counter to protect
+in the first place.
 
-## Run it
+## Try it yourself
 
 ```bash
 python python/parallelism.py
 ```
-
-Compares a single-threaded baseline, 4 GIL-bound threads, and 4
-`multiprocessing` workers on the same CPU-bound task.
 
 ```bash
 cd rust
 cargo run --release
 ```
 
-Compares a single-threaded baseline, 4 plain OS threads, and Rayon's
-`par_iter()` — all with no GIL, all on separate cores.
+Both programs compare running the same heavy task on one thread, on
+several threads, and (for Rust) using the Rayon helper tool.

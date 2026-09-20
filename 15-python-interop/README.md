@@ -1,135 +1,150 @@
-# 15. Python Interop
+# 15. Using Rust Code From Inside A Python Program
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about writing just one small, slow piece of a Python program
+in Rust instead, while keeping the rest of the program in Python
+exactly as it was.
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | Using Rust code from inside a Python program: a Python  |
-|       | module written in Rust.                                 |
+| WHAT  | Using Rust code from inside a Python program — a Python     |
+|       | library that's actually written in Rust underneath.          |
 +-------+---------------------------------------------------------+
-| WHY   | Keep Python's convenience and speed up only the slow    |
-|       | part, with no full rewrite.                             |
+| WHY   | Keep all of Python's convenience, but speed up only the      |
+|       | one slow part, without rewriting the whole program.            |
 +-------+---------------------------------------------------------+
-| WHEN  | You profiled your code and found one hot function.      |
+| WHEN  | After you've measured your program and found exactly one      |
+|       | slow function that's the bottleneck.                            |
 +-------+---------------------------------------------------------+
-| WHERE | Number crunching, parsers, validators. Polars,          |
-|       | pydantic-core and ruff are Rust-backed.                 |
+| WHERE | Heavy number-crunching, reading structured data, checking      |
+|       | that data is valid. Some well-known Python tools (Polars,        |
+|       | pydantic-core, ruff) are already built this way.                  |
 +-------+---------------------------------------------------------+
-| WHO   | Python teams that need speed without leaving Python.    |
+| WHO   | Python teams who need more speed but don't want to leave        |
+|       | Python.                                                            |
 +-------+---------------------------------------------------------+
-| HOW   | Write the function in Rust with PyO3, build with        |
-|       | maturin, then import it like any Python module.         |
+| HOW   | Write the slow function in Rust using a connector tool          |
+|       | called "PyO3", build it into a Python-compatible library         |
+|       | with a tool called "maturin", then import and use it just         |
+|       | like any other Python library.                                     |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
    +-------------------------------+
-   |  Your Python app (unchanged)  |
-   |   ...                         |     +----------------------+
-   |   r = fast_mod.compute(data)  |---->| Rust function        |
-   |   ...                         |<----| (native, via PyO3)   |
+   |  Your Python program           |
+   |  (everything else unchanged)   |     +----------------------+
+   |   answer = fast_tool.compute(x)|---->| The Rust function     |
+   |   ...                          |<----| (runs at native speed)|
    +-------------------------------+     +----------------------+
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
-          PYTHON ALONE                      PYTHON + RUST
+        PYTHON ON ITS OWN                  PYTHON + RUST TOGETHER
 +------------------------------+   +------------------------------+
-| 1) Profile: find the slow    |   | 1) Rewrite ONLY that         |
-|    function                  |   |    function in Rust          |
-+------------------------------+   +------------------------------+
-               v                                  v
-+------------------------------+   +------------------------------+
-| 2) Loop runs in the          |   | 2) Build with maturin        |
-|    interpreter               |   |    (PyO3 bindings)           |
+| 1) Measure the program: find    |   | 1) Rewrite ONLY that ONE     |
+|    the one slow function         |   |    function in Rust           |
 +------------------------------+   +------------------------------+
                v                                  v
 +------------------------------+   +------------------------------+
-| 3) Program stays slow        |   | 3) import fast_mod in        |
-|    at that spot              |   |    Python as usual           |
+| 2) The loop runs inside          |   | 2) Build it into a Python-  |
+|    Python's own program-reader    |   |    compatible library         |
 +------------------------------+   +------------------------------+
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) That one spot stays slow      |   | 3) Import it in Python,      |
+|    no matter what else you do     |   |    exactly like any other     |
++------------------------------+   |    library                     |
+               |                   +------------------------------+
                |                                  v
                |                   +------------------------------+
-               |                   | 4) Rest of code unchanged,   |
-               |                   |    hot path runs native      |
+               |                   | 4) Everything else stays        |
+               |                   |    unchanged Python — only        |
+               |                   |    the slow part is now native     |
                |                   +------------------------------+
                |                                  |
                v                                  v
-  RESULT: slow hot path              RESULT: same Python app,
-                                     fast hot path
+  RESULT: the slow part stays          RESULT: same Python program,
+  slow no matter what                  slow part now runs fast
 ```
 
-(Not measured here: needs PyO3 set up locally.)
+There's no measured number here — this depends on setting up the
+connector tool locally first.
 
-## PART D — verdict
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
+| WHICH ONE SHOULD YOU PICK?                                      |
 +--------+--------------------------------------------------------+
-| RUST   | Best of both: rewrite only the slow function in Rust.  |
+| RUST   | Best of both worlds: rewrite only the slow function,     |
+|        | leave everything else alone.                               |
 +--------+--------------------------------------------------------+
-| PYTHON | Python stays the glue: keep it for everything that is  |
-|        | not hot.                                                |
+| PYTHON | Stays the glue holding everything together: keep it for   |
+|        | everything that isn't the slow part.                        |
 +--------+--------------------------------------------------------+
 ```
 
-## PART E — why Rust wins here (deep dive)
+## Part E — a deeper look at why this pairing works so well
 
-The reason this pairing works so well is that the "bridge" PyO3
-generates has almost no cost of its own — the boundary crossing is
-mostly bookkeeping, not data conversion.
+The reason this combination works so smoothly is that crossing from
+Python into Rust and back barely costs anything — it's mostly just
+handing values across, not converting or copying huge amounts of data.
 
 ```
 +-----------------------------------------------------------------+
-| WHAT `#[pyfunction] fn compute(values: Vec<i64>) -> PyResult<..>`|
-| ACTUALLY COMPILES TO                                             |
+| WHAT ACTUALLY HAPPENS WHEN PYTHON CALLS A RUST FUNCTION           |
 +-----------------------------------------------------------------+
-| 1) Python calls fast_mod.compute(list_of_ints)                  |
-|         |                                                        |
-|         v                                                        |
-| 2) PyO3-generated C-ABI wrapper function runs:                   |
-|      - reads the Python list via the C API (PyList_GetItem)      |
-|      - converts each PyObject int -> a plain i64 (a memcpy-      |
-|        cheap operation, no new Python objects created)           |
-|         |                                                        |
-|         v                                                        |
-| 3) Your actual Rust `compute()` runs at full native speed on a   |
-|    plain Vec<i64> - the borrow checker, ownership, and every     |
-|    other guarantee elsewhere in this repo still apply HERE       |
-|         |                                                        |
-|         v                                                        |
-| 4) Wrapper converts the i64 result back to a Python int and      |
-|    returns it - one allocation, not one per element              |
+| 1) Python calls fast_tool.compute(a_list_of_numbers)               |
+|         |                                                            |
+|         v                                                            |
+| 2) A small connector piece, generated automatically by the PyO3     |
+|    tool, runs first:                                                 |
+|      - reads the Python list directly                                |
+|      - turns each Python number into a plain number Rust can use     |
+|        (a quick, direct conversion — no new Python objects created)  |
+|         |                                                             |
+|         v                                                              |
+| 3) Your actual Rust code runs at full native speed on those plain    |
+|    numbers — everything covered elsewhere in this project (safe       |
+|    memory handling, no accidental data corruption between threads,     |
+|    and so on) still applies here too                                    |
+|         |                                                                |
+|         v                                                                |
+| 4) The connector piece turns the final answer back into a single       |
+|    Python number and hands it back — one conversion for the whole       |
+|    answer, not one for every single number involved                      |
 +-----------------------------------------------------------------+
 ```
 
-Two things make this cheaper than, say, shelling out to a separate
-process or calling a REST API for the same speed-up:
+Two things make this cheaper than, say, running the Rust code as a
+totally separate program and talking to it over the network:
 
-1. **Same address space.** PyO3 links the compiled Rust code directly
-   into the Python process as a native extension module (a `.pyd`/
-   `.so`), exactly like NumPy or any other C extension. There is no
-   serialization, no IPC, no network hop — just a function call
-   through the C ABI.
-2. **The GIL is explicit, not implicit.** Rust functions called from
-   Python normally still hold the GIL (so they're safe to touch
-   Python objects), but PyO3 lets you release it (`Python::allow_threads`)
-   around the pure-Rust portion of your work — so a Rust extension can
-   also sidestep the GIL bottleneck described in
-   [03-parallelism](../03-parallelism), something a pure-Python
-   function never can.
+1. **They share the exact same running program.** The connector tool
+   builds the Rust code directly into the same running Python
+   process, exactly like other well-known fast Python libraries do.
+   There's no sending data over a network, no separate program to
+   start — just a direct function call.
+2. **Python's "only one thread at a time" rule can be turned off for
+   the Rust part.** A Rust function called from Python can choose to
+   temporarily step outside that rule (described in
+   [03-parallelism](../03-parallelism)) while it does its own
+   heavy lifting — something a plain Python function is never able to
+   do on its own.
 
-This is exactly how `pydantic-core`, `ruff`, and `polars` get Python
-ergonomics with native speed: the slow inner loop is compiled Rust;
-everything else stays Python.
+This is exactly how tools like `pydantic-core`, `ruff`, and `polars`
+manage to feel like ordinary, easy Python libraries while running as
+fast as native code underneath: the slow inner loop is compiled Rust;
+everything else stays comfortable, ordinary Python.
 
-## Run it
+## Try it yourself
 
 ```bash
 cd rust
@@ -142,6 +157,7 @@ cd ../python
 python use_fast_mod.py
 ```
 
-Without the `maturin develop` step, `use_fast_mod.py` still runs and
-reports that `fast_mod` isn't built yet, then falls back to the pure
-Python path so you can see the "before" state too.
+Even without running the `maturin develop` step first, `use_fast_mod.py`
+still runs — it will simply report that the Rust version isn't built
+yet, and fall back to running the plain Python version instead, so you
+can see the "before" result too.

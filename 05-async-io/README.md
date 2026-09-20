@@ -1,131 +1,141 @@
-# 5. Async I/O
+# 5. Handling Many "Waiting" Tasks At Once
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about doing other useful work while waiting for something
+slow (like a reply from the internet, or a disk), instead of just
+sitting there frozen until it's ready.
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | Doing other work while waiting for slow things          |
-|       | (network, disk, database) instead of freezing.          |
+| WHAT  | Doing other work while waiting for something slow        |
+|       | (network, disk, database) instead of freezing until it   |
+|       | finishes.                                                 |
 +-------+---------------------------------------------------------+
-| WHY   | Waiting wastes time. One slow request should not block  |
-|       | thousands of others.                                    |
+| WHY   | Waiting wastes time. One slow request shouldn't force     |
+|       | thousands of other requests to also sit and wait.         |
 +-------+---------------------------------------------------------+
-| WHEN  | Many connections or requests that spend most of their   |
-|       | time waiting.                                           |
+| WHEN  | Handling many connections or requests that spend most of |
+|       | their time just waiting.                                  |
 +-------+---------------------------------------------------------+
-| WHERE | Web servers, API gateways, crawlers, message consumers. |
+| WHERE | Web servers, systems that connect other services         |
+|       | together, programs that scan websites, message systems.  |
 +-------+---------------------------------------------------------+
-| WHO   | Backend and data-streaming developers.                  |
+| WHO   | People building backend systems and services that stream |
+|       | data.                                                     |
 +-------+---------------------------------------------------------+
-| HOW   | A task pauses at 'await' and a scheduler runs another   |
-|       | task. Python's asyncio uses one thread; Rust's Tokio    |
-|       | uses many threads.                                      |
+| HOW   | A task pauses itself at a "wait here" point, and a        |
+|       | scheduler runs a different task in the meantime. Python's |
+|       | version of this uses a single line of work; Rust's        |
+|       | version (a tool called "Tokio") spreads tasks across       |
+|       | several lines of work at once.                             |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
-   Task A : [run]~~~~ waiting for network ~~~~[run]
-   Task B :       [run]~~~~ waiting ~~~~[run]
-   Task C :             [run]~~~~ waiting ~~~~[run]
+   Task A : [running]~~~~ waiting on the network ~~~~[running]
+   Task B :          [running]~~~~ waiting ~~~~[running]
+   Task C :                   [running]~~~~ waiting ~~~~[running]
 
-   While one task waits, the CPU works on another task.
+   While one task is waiting, the CPU works on a different task.
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
              PYTHON                              RUST
 +------------------------------+   +------------------------------+
-| 1) asyncio: one event        |   | 1) Tokio runtime with        |
-|    loop on ONE thread        |   |    a pool of worker threads  |
+| 1) One scheduler running on  |   | 1) A scheduler with a pool   |
+|    a SINGLE line of work     |   |    of several lines of work  |
 +------------------------------+   +------------------------------+
                v                                  v
 +------------------------------+   +------------------------------+
-| 2) Task hits await:          |   | 2) Task hits .await:         |
-|    hands control back        |   |    thread runs another task  |
+| 2) Task reaches a "wait      |   | 2) Task reaches a "wait      |
+|    here" point: hands        |   |    here" point: that line of |
+|    control back               |   |    work picks up another task |
 +------------------------------+   +------------------------------+
                v                                  v
 +------------------------------+   +------------------------------+
-| 3) Loop starts another       |   | 3) Tasks spread over ALL     |
-|    waiting task              |   |    cores (work stealing)     |
+| 3) The scheduler starts a    |   | 3) Tasks are spread across   |
+|    different waiting task    |   |    ALL CPU cores automatically|
 +------------------------------+   +------------------------------+
                v                                  |
 +------------------------------+                  |
-| 4) CPU-heavy code in any     |                  |
-|    task BLOCKS them all      |                  |
+| 4) A heavy calculation in    |                  |
+|    any one task freezes      |                  |
+|    ALL of them                |                  |
 +------------------------------+                  |
                |                                  |
                v                                  v
-  RESULT: fine for I/O,              RESULT: I/O + CPU work
-  one core for the rest              scale across cores
+  RESULT: great for waiting          RESULT: waiting AND heavy
+  tasks, only one core used          calculations both spread
+  for everything else                 across all cores
 ```
 
-Measured (50,000 tasks): overhead 0.561 s vs 0.023 s = ~25x less.
+In a real test: handling 50,000 waiting tasks had a setup cost of
+0.561 seconds in Python and only 0.023 seconds in Rust — about 25
+times less overhead.
 
-## PART D — verdict
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
+| WHICH ONE SHOULD YOU PICK?                                      |
 +--------+--------------------------------------------------------+
-| RUST   | Better when you have huge concurrency, or CPU work     |
-|        | mixed in with I/O.                                     |
+| RUST   | Better when you need to handle huge numbers of tasks at |
+|        | once, or you're mixing heavy calculations with waiting. |
 +--------+--------------------------------------------------------+
-| PYTHON | Fine for I/O-heavy programs with little CPU work per   |
-|        | request.                                               |
+| PYTHON | Fine for programs that are mostly just waiting, with    |
+|        | little actual calculation per request.                  |
 +--------+--------------------------------------------------------+
 ```
 
-## PART E — why Rust wins here (deep dive)
+## Part E — a deeper look at why Rust handles more tasks so much more cheaply
 
-Both languages use the same core idea — a task suspends at an await
-point and something else runs meanwhile — but *what a suspended task
-costs to keep around* differs by an order of magnitude.
+Both languages use the same basic idea — a task pauses itself at a
+"wait here" point and something else runs in the meantime — but how
+expensive it is to keep a paused task around is very different.
 
 ```
 +-----------------------------------------------------------------+
-| WHAT AN `async fn` ACTUALLY COMPILES TO IN RUST                  |
+| WHAT A PAUSED RUST TASK ACTUALLY LOOKS LIKE                       |
 +-----------------------------------------------------------------+
-| async fn fake_request(id: usize) -> usize {                       |
-|     tokio::time::sleep(Duration::from_secs(0)).await;             |
-|     id                                                             |
-| }                                                                   |
+| A "wait for the network" task, once compiled, turns into a tiny  |
+| record that just says which step it's currently on:               |
 |                                                                     |
-| The compiler turns this into a hand-written-quality STATE MACHINE  |
-| (an enum) with one variant per suspend point:                      |
+|   step: "just started"                                            |
+|   step: "waiting on the network reply"                            |
+|   step: "finished"                                                 |
 |                                                                     |
-|   enum FakeRequestState {                                          |
-|       Start(usize),                                                |
-|       WaitingOnSleep(usize, tokio::time::Sleep),                   |
-|       Done,                                                        |
-|   }                                                                 |
-|                                                                     |
-| "Awaiting" is just returning Poll::Pending from this state          |
-| machine's poll() method; resuming is calling poll() again. No       |
-| stack, no frame object, no heap allocation beyond the enum itself.  |
+| "Pausing" just means: the scheduler stops asking this record       |
+| "are you done yet?" for a moment. "Resuming" means: it asks        |
+| again. No extra memory is set aside beyond this tiny record —      |
+| there's no full snapshot of a running program to keep around.      |
 +-----------------------------------------------------------------+
 ```
 
-Python's `asyncio` represents each suspended coroutine as a full
-Python-level object: a `coroutine` wrapping a real interpreter frame
-(locals, the bytecode instruction pointer, exception state), scheduled
-by a single-threaded event loop that is itself just Python code making
-`select`/`epoll` calls. Every resume re-enters the bytecode
-interpreter. Tokio's tasks are plain structs polled by a scheduler
-written in Rust, running across a **work-stealing pool of OS threads**
-— so unlike `asyncio`, a CPU-heavy task doesn't block every other task
-on the same thread, because there usually isn't just one thread.
+Python represents each paused task as a much heavier object: a full
+snapshot of a running piece of Python code (its local variables,
+exactly which line it's on, and more), managed by a scheduler that is
+itself ordinary Python code running on one single line of work.
+Resuming a Python task means re-entering the Python reader-program
+described in [01-cpu-bound-speed](../01-cpu-bound-speed). Rust's Tokio
+tool, on the other hand, is a scheduler written in fast, compiled code
+that spreads tasks across **several real lines of work running in
+parallel**, and — unlike Python's version — idle lines of work can pick
+up extra tasks from busy ones automatically. That's also why a heavy
+calculation inside one task doesn't freeze every other task in Rust:
+there's usually more than one line of work available to keep going.
 
-That's the concrete reason 50,000 Tokio tasks cost roughly 25x less
-overhead than 50,000 asyncio tasks: each one is a small stack-allocated
-enum polled directly, not a heap-allocated interpreter frame walked by
-another layer of Python.
+That combination — a much smaller "paused task" record, plus more
+than one line of work sharing the load — is the real reason 50,000
+tasks cost roughly 25 times less overhead in Rust.
 
-## Run it
+## Try it yourself
 
 ```bash
 python python/async_io.py
@@ -136,6 +146,5 @@ cd rust
 cargo run --release
 ```
 
-Both spawn 50,000 tasks that immediately yield (`asyncio.sleep(0)` /
-`tokio::time::sleep(0)`) and report how long scheduling all of them
-took.
+Both programs start 50,000 tasks that immediately pause and resume,
+and report how long handling all of them took.

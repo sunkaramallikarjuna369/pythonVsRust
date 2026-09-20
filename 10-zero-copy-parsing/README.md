@@ -1,125 +1,144 @@
-# 10. Zero-Copy Parsing
+# 10. Reading Data Without Making Extra Copies Of It
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about reading through a big chunk of text (like a data file)
+by just pointing at the pieces you need, instead of copying each piece
+out into a brand new bit of memory.
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | Reading data by pointing at the original bytes instead  |
-|       | of making a new copy of each piece.                     |
+| WHAT  | Reading data by pointing directly at the original text,   |
+|       | instead of making a brand new copy of every single piece. |
 +-------+---------------------------------------------------------+
-| WHY   | Copying costs time and memory, multiplied by millions   |
-|       | of records.                                             |
+| WHY   | Copying costs time and memory, and that cost multiplies    |
+|       | when you're reading millions of records.                   |
 +-------+---------------------------------------------------------+
-| WHEN  | Parsing big files or streams: logs, CSV, JSON, network  |
-|       | messages.                                               |
+| WHEN  | Reading through big files or streams: logs, spreadsheets   |
+|       | of data, structured messages, network messages.             |
 +-------+---------------------------------------------------------+
-| WHERE | Log processors, ingestion pipelines, protocol parsers.  |
+| WHERE | Log-reading tools, data pipelines, tools that read          |
+|       | messages sent between programs.                              |
 +-------+---------------------------------------------------------+
-| WHO   | Data engineers ingesting large volumes.                 |
+| WHO   | People working with large amounts of incoming data.         |
 +-------+---------------------------------------------------------+
-| HOW   | Rust's &str is a slice: a start position + a length     |
-|       | pointing INTO the original buffer. Python's split()     |
-|       | builds brand-new string objects.                        |
+| HOW   | In Rust, a piece of text you slice out is really just "a   |
+|       | starting point plus a length" pointing INTO the original    |
+|       | text — no copy needed. In Python, splitting a line of text  |
+|       | always builds brand new pieces of text.                      |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
-   buffer :  1,ERROR,user9,45
-             ^ ^^^^^ ^^^^^ ^^
-   Rust   :  slices = (start, length) INTO the buffer
-             "ERROR" = (2, 5)   -> no new memory used
-   Python :  "1"  "ERROR"  "user9"  "45"  -> 4 NEW string objects
+   original text  :  1,ERROR,user9,45
+                      ^ ^^^^^ ^^^^^ ^^
+   Rust's way    :  just remembers "starts here, this many          |
+                     characters long" — pointing INTO the original    |
+                     text. "ERROR" = starts at character 2, 5 long.   |
+                     No new memory used at all.                        |
+
+   Python's way  :  "1"  "ERROR"  "user9"  "45"  — 4 brand new pieces |
+                     of text, each one a fresh copy
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
              PYTHON                              RUST
 +------------------------------+   +------------------------------+
-| 1) Text buffer in memory     |   | 1) Text buffer in memory     |
+| 1) A big chunk of text is in |   | 1) A big chunk of text is in |
+|    memory                     |   |    memory                     |
 +------------------------------+   +------------------------------+
                v                                  v
 +------------------------------+   +------------------------------+
-| 2) line.split(',') builds    |   | 2) split(',') gives &str =   |
-|    NEW string objects        |   |    pointer + length INTO     |
-+------------------------------+   |    the same buffer           |
-               v                   +------------------------------+
-+------------------------------+                  v
-| 3) int(p[3]) converts        |   +------------------------------+
-|    another copy              |   | 3) Parse in place: no        |
-+------------------------------+   |    copy, no new strings      |
-               v                   +------------------------------+
-+------------------------------+                  |
-| 4) Many allocations for      |                  |
-|    millions of lines         |                  |
+| 2) Splitting the line builds  |   | 2) Splitting the line gives  |
+|    brand NEW pieces of text    |   |    back "start point +        |
++------------------------------+   |    length" markers pointing    |
+               v                   |    INTO the same original text  |
++------------------------------+   +------------------------------+
+| 3) Turning a piece into a      |                  v
+|    number makes yet another    |   +------------------------------+
+|    copy                        |   | 3) The number is read right   |
++------------------------------+   |    out of the original text —  |
+               v                   |    no copies made anywhere       |
++------------------------------+   +------------------------------+
+| 4) Lots of tiny bits of         |                  |
+|    memory get created for       |                  |
+|    millions of lines             |                  |
 +------------------------------+                  |
                |                                  |
                v                                  v
-  RESULT: more allocation,           RESULT: far fewer
-  more time                          allocations
+  RESULT: more memory used,           RESULT: far fewer new
+  more time spent                      pieces of memory created
 ```
 
-Measured (2M CSV lines): 0.358 s vs 0.097 s = ~4x.
+In a real test: reading 2,000,000 lines of data took 0.358 seconds in
+Python and 0.097 seconds in Rust — about 4 times faster.
 
-## PART D — verdict
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
+| WHICH ONE SHOULD YOU PICK?                                      |
 +--------+--------------------------------------------------------+
-| RUST   | Better for very large streams (about 4x in my test).   |
+| RUST   | Better for very large streams of data (about 4 times     |
+|        | faster in this test).                                    |
 +--------+--------------------------------------------------------+
-| PYTHON | Fine for moderate files (split() itself runs as fast C |
-|        | code), or use pandas/Polars.                           |
+| PYTHON | Fine for moderate-sized files (splitting text in Python  |
+|        | is itself already pretty fast), or use a library like     |
+|        | pandas or Polars for bigger jobs.                          |
 +--------+--------------------------------------------------------+
 ```
 
-## PART E — why Rust wins here (deep dive)
+## Part E — a deeper look at why this trick is safe in Rust
 
-The interesting part isn't the speed — it's *why slicing without
-copying is even safe*. In C, returning a pointer into a buffer that
-might later be freed is a classic dangling-pointer bug. Rust makes the
-same trick safe using **lifetimes**, a piece of the borrow checker.
+Pointing at the middle of someone else's data instead of copying it is
+risky in many older languages — if the original data gets thrown away
+while you're still pointing at it, your program can crash or read
+garbage. Rust makes this same trick safe using a compiler check that
+tracks, for every single one of these "pointing into" pieces of text,
+exactly how long it's allowed to be used.
 
 ```
 +-----------------------------------------------------------------+
-| WHAT A LIFETIME ACTUALLY BUYS YOU                                |
+| WHAT THAT TRACKING ACTUALLY BUYS YOU                              |
 +-----------------------------------------------------------------+
-| fn parse_line<'a>(line: &'a str) -> Vec<&'a str> {               |
-|     line.split(',').collect()                                   |
-| }                                                                 |
-|                                                                   |
-| The signature says: "every &str I hand back borrows from, and    |
-| cannot outlive, the `line` you gave me."                         |
-|                                                                   |
-|   let parts;                                                     |
-|   {                                                               |
-|       let buffer = String::from("1,ERROR,user9,45");             |
-|       parts = parse_line(&buffer);                               |
-|   } // buffer freed here                                         |
-|   println!("{:?}", parts); // COMPILE ERROR: `buffer` does not   |
-|                             // live long enough                  |
+| A function that splits a line of text and hands back pieces        |
+| that point into that same line, is only allowed to be used         |
+| while the original line still exists — the compiler tracks this    |
+| and enforces it:                                                    |
+|                                                                       |
+|   somewhere later in the code...                                    |
+|   {                                                                   |
+|       create the original line of text HERE                          |
+|       split it into pieces that point into it                        |
+|   } // the original line of text gets thrown away right here         |
+|   try to use those pieces down here // COMPILE ERROR: the original   |
+|                                      // text doesn't live long        |
+|                                      // enough for this to be safe    |
 +-----------------------------------------------------------------+
 ```
 
-The compiler tracks, for every reference, the region of code in which
-it is valid, and rejects any use of that reference outside that
-region. That is what turns "pointer + length into someone else's
-memory" from a footgun into a checked, zero-cost operation — the
-`&str` slice is literally just `(pointer, length)` at runtime, exactly
-like the raw pointer trick, but the compiler proves beforehand that it
-can never dangle.
+The compiler keeps track, for every single one of these pointing-in
+pieces, of exactly which stretch of the program it's allowed to be
+used in, and refuses to compile any use of it outside that stretch.
+That's what turns "point at someone else's memory instead of copying
+it" from a classic bug waiting to happen into something checked ahead
+of time and completely safe — while still running exactly as fast as
+the risky version, since at the machine level it really is just "a
+starting point plus a length."
 
-Python's `line.split(',')` can't return slices of `line` at all
-because Python strings are immutable *objects*, not raw buffers a
-lightweight view can point into from user code — so a fresh string
-object is the only option, every time.
+Python's plain pieces of text can't work this way at all, because in
+Python, text is never something your own code can point partway into
+— it can only ever hand you a whole, separate, brand new piece of
+text. So a fresh copy is the only option Python has, every single
+time.
 
-## Run it
+## Try it yourself
 
 ```bash
 python python/zero_copy_parsing.py
@@ -130,4 +149,5 @@ cd rust
 cargo run --release
 ```
 
-Both parse 2,000,000 CSV-style lines and sum one integer column.
+Both programs read through 2,000,000 lines of comma-separated data
+and add up one column of numbers.

@@ -1,123 +1,141 @@
-# 11. Deployment
+# 11. Getting Your Program Running On Another Computer
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about what it takes to move your finished program from your
+own computer onto a server, a container, or someone else's computer,
+and get it running there.
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | Getting your program from your laptop to run somewhere  |
-|       | else: a server, container or customer PC.               |
+| WHAT  | Getting your program from your own computer to run          |
+|       | somewhere else: a server, a packaged container, or a         |
+|       | customer's computer.                                          |
 +-------+---------------------------------------------------------+
-| WHY   | More moving parts means more things that can break,     |
-|       | bigger images and slower start-up.                      |
+| WHY   | More separate pieces means more things that can break,       |
+|       | bigger packages to send around, and slower start-up times.    |
 +-------+---------------------------------------------------------+
-| WHEN  | Every release, and especially for serverless functions  |
-|       | that start often.                                       |
+| WHEN  | Every time you release a new version, and especially for     |
+|       | small on-demand functions that start up often.                |
 +-------+---------------------------------------------------------+
-| WHERE | Docker, Cloud Run / Lambda, tools you hand to other     |
-|       | people.                                                 |
+| WHERE | Packaged containers (like Docker), cloud services that        |
+|       | run your code on demand, tools you hand to other people.       |
 +-------+---------------------------------------------------------+
-| WHO   | DevOps and anyone shipping software.                    |
+| WHO   | People who manage servers, and anyone shipping software.      |
 +-------+---------------------------------------------------------+
-| HOW   | Python: ship an interpreter + virtualenv + libraries +  |
-|       | your code. Rust: build one binary file and copy it.     |
+| HOW   | For Python, you need to ship the Python program-reader        |
+|       | itself, plus an isolated set of installed libraries, plus     |
+|       | your own code. For Rust, you build one single file and just    |
+|       | copy that.                                                     |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
-   Python package to ship:            Rust package to ship:
-   +---------------------------+      +----------------+
-   | Python interpreter        |      |                |
-   | virtualenv                |      |   ONE binary   |
-   | libraries (pip)           |      |   (.exe)       |
-   | your .py code             |      |                |
-   +---------------------------+      +----------------+
+   What you need to ship for Python:      What you need to ship
+                                           for Rust:
+   +---------------------------+          +----------------+
+   | The Python program-reader |          |                |
+   | An isolated set of        |          | ONE single     |
+   |   installed libraries      |          | file           |
+   | Your own .py code           |          |                |
+   +---------------------------+          +----------------+
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
              PYTHON                              RUST
 +------------------------------+   +------------------------------+
-| 1) Install the right         |   | 1) cargo build --release     |
-|    Python version            |   +------------------------------+
-+------------------------------+                  v
-               v                   +------------------------------+
-+------------------------------+   | 2) Get ONE binary file       |
-| 2) Create a virtualenv       |   |    (dependencies inside)     |
+| 1) Install the right          |   | 1) Build the program in       |
+|    version of Python            |   |    "release" mode              |
 +------------------------------+   +------------------------------+
                v                                  v
 +------------------------------+   +------------------------------+
-| 3) pip install every         |   | 3) Copy it, run it           |
-|    dependency                |   |    (~1 ms start)             |
+| 2) Set up an isolated space    |   | 2) Get back ONE single file  |
+|    for that project's           |   |    (everything it needs is    |
+|    libraries                    |   |    already built in)           |
 +------------------------------+   +------------------------------+
-               v                                  |
+               v                                  v
++------------------------------+   +------------------------------+
+| 3) Install every library the   |   | 3) Copy it over, run it       |
+|    project needs                |   |    (starts in about 1         |
++------------------------------+   |    thousandth of a second)      |
+               v                   +------------------------------+
 +------------------------------+                  |
-| 4) Ship code + venv, start   |                  |
-|    interpreter (~9 ms)       |                  |
+| 4) Ship the code plus the       |                  |
+|    isolated space, then start   |                  |
+|    the program-reader (about     |                  |
+|    9 thousandths of a second)   |                  |
 +------------------------------+                  |
                |                                  |
                v                                  v
-  RESULT: many moving                RESULT: one file, tiny
-  parts                              container image
+  RESULT: several separate            RESULT: one file, a tiny
+  moving pieces                       package overall
 ```
 
-Measured start-up: 9.34 ms vs 0.91 ms; hello binary ~338 KB.
+In a real test: starting up took about 9.34 thousandths of a second in
+Python versus 0.91 thousandths of a second in Rust; the Rust "hello
+world" file came out to about 338 KB in total.
 
-## PART D — verdict
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
+| WHICH ONE SHOULD YOU PICK?                                      |
 +--------+--------------------------------------------------------+
-| RUST   | Better for tiny images, fast cold starts and tools you |
-|        | give to others.                                        |
+| RUST   | Better for tiny packages, fast start-up, and tools you   |
+|        | hand off to other people.                                 |
 +--------+--------------------------------------------------------+
-| PYTHON | Fine when Docker/CI already manage your environment.   |
+| PYTHON | Fine when your packaging tools already manage the setup   |
+|        | for you.                                                   |
 +--------+--------------------------------------------------------+
 ```
 
-## PART E — why Rust wins here (deep dive)
+## Part E — a deeper look at why Rust starts up so much faster
 
-The gap traces back to *when* work happens: link time vs. every
-process start.
+The gap comes down to *when* the heavy lifting happens: while you're
+building the program, versus every single time it starts up.
 
 ```
 +-----------------------------------------------------------------+
-| WHAT HAPPENS THE INSTANT YOU TYPE `./program` OR `python app.py` |
+| WHAT HAPPENS THE INSTANT YOU RUN THE PROGRAM                     |
 +-----------------------------------------------------------------+
-| Rust binary:                                                     |
-|   OS loader maps the ELF/PE file's pages into memory             |
-|   -> jumps straight to `main` (dependencies already linked       |
-|      in at BUILD time by rustc/LLVM, mostly statically)          |
-|   -> ~1 ms                                                       |
-|                                                                   |
-| Python script:                                                   |
-|   OS loader starts the `python` executable                       |
-|   -> interpreter initializes: builds the module import system,   |
-|      compiles/loads the standard library's own .py/.pyc files,   |
-|      sets up the GC, sets up type objects for every builtin      |
-|   -> resolves and imports your dependencies from disk (pip site- |
-|      packages), each one running ITS OWN top-level Python code   |
-|   -> only THEN starts running `app.py`                           |
-|   -> ~9 ms, and grows with every import you add                  |
+| Rust's single file:                                                |
+|   the operating system loads the file into memory                  |
+|   -> jumps straight to the start of your program (everything it    |
+|      needs was already figured out and packed in while it was      |
+|      being built, on your own computer)                             |
+|   -> about 1 thousandth of a second                                 |
+|                                                                       |
+| Python script:                                                     |
+|   the operating system starts the Python program-reader              |
+|   -> the reader sets itself up: builds its own internal systems,     |
+|      loads its own built-in library files, sets up its background    |
+|      memory helper                                                   |
+|   -> it then finds and loads every library YOUR code depends on      |
+|      from disk, and each one of those runs its OWN start-up code     |
+|   -> only THEN does it actually start running your program            |
+|   -> about 9 thousandths of a second, and it grows the more           |
+|      libraries you add                                                |
 +-----------------------------------------------------------------+
 ```
 
-Rust pays its "linking" cost once, at `cargo build --release` time,
-producing a binary that already knows exactly which machine code to
-jump to for every function call. Python defers almost all of that
-resolution to run time — it re-discovers what every imported module
-contains on every single process start, because nothing is compiled
-ahead of time to a fixed address. That is also why a Rust binary can
-be copied to another machine and just run: there is no "was the right
-interpreter version installed with the right packages?" step left to
-fail.
+Rust does all of its "figuring out where everything is" work once,
+while you're building the program on your own computer, producing a
+single file that already knows exactly what to do and where everything
+is. Python puts almost all of that figuring-out off until the program
+actually starts running — it re-discovers what every library contains,
+fresh, every single time, because nothing was worked out and locked in
+ahead of time. That's also why a Rust file can just be copied to
+another computer and run right away: there's no "is the right version
+of the program-reader installed, with the right libraries?" question
+left to go wrong.
 
-## Run it
+## Try it yourself
 
 ```bash
 python python/hello.py
@@ -129,5 +147,5 @@ cargo build --release
 ./target/release/hello
 ```
 
-Time either with your shell's `time` command to compare cold-start
-latency.
+Time either one with your terminal's built-in timing tool to compare
+how quickly each one starts up.

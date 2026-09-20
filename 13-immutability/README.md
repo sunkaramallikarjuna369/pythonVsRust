@@ -1,137 +1,152 @@
-# 13. Immutability
+# 13. Data That Is Not Allowed To Change By Accident
 
-See the glossary in [rust_vs_python_ascii_diagrams_cpu.txt](../rust_vs_python_ascii_diagrams_cpu.txt) if a term below is unfamiliar.
+This is about data that, once created, cannot be changed unless you
+specifically say it's allowed to be. Data that can't be changed at all
+is often called "immutable."
+
+## Part A — the basics
 
 ```
 +-----------------------------------------------------------------+
-| PART A - WHAT IT IS (5W+H)                                      |
+| WHAT IS IT?                                                     |
 +-------+---------------------------------------------------------+
-| WHAT  | Data that cannot change after it is created. In Rust,   |
-|       | variables are unchangeable unless you write 'mut'.      |
+| WHAT  | Data that cannot change after it's created. In Rust,       |
+|       | variables are locked and unchangeable by default, unless   |
+|       | you specifically mark them as changeable.                   |
 +-------+---------------------------------------------------------+
-| WHY   | If nothing can change your data behind your back, 'who  |
-|       | changed this?' bugs disappear, and threads are safer.   |
+| WHY   | If nothing can quietly change your data behind your back,  |
+|       | "wait, who changed this?" bugs disappear, and sharing        |
+|       | data between threads becomes much safer.                     |
 +-------+---------------------------------------------------------+
-| WHEN  | Sharing data between functions or threads.              |
+| WHEN  | Whenever you're passing data between functions, or           |
+|       | sharing it between threads.                                    |
 +-------+---------------------------------------------------------+
-| WHERE | Config, shared state, data pipelines.                   |
+| WHERE | Settings, data shared across a program, data pipelines.       |
 +-------+---------------------------------------------------------+
-| WHO   | Anyone who has debugged a value that changed            |
-|       | unexpectedly.                                           |
+| WHO   | Anyone who has ever spent time tracking down a value that     |
+|       | changed when they didn't expect it to.                         |
 +-------+---------------------------------------------------------+
-| HOW   | Rust: 'let' is locked, 'let mut' can change, and only   |
-|       | ONE &mut may exist at a time. Python: everything is     |
-|       | changeable by default.                                  |
+| HOW   | In Rust, a plain variable is locked by default; you have to   |
+|       | explicitly mark it as changeable, and even then only ONE       |
+|       | changeable reference to it is allowed to exist at a time. In   |
+|       | Python, everything can be changed by default, from anywhere.   |
 +-------+---------------------------------------------------------+
 ```
 
-## PART B — the concept in one picture
+## Part B — the idea in one picture
 
 ```
-   Python :  x --> [1, 2, 3]   <-- f(x) can change it
-                               <-- g(x) can change it too
-                               Who changed it? Search everywhere.
+   Python : x points to [1, 2, 3]   <-- one function can change it
+                                    <-- another function can too
+                                    Who actually changed it? You'd
+                                    have to search the whole program.
 
-   Rust   :  let x = [1,2,3]   LOCKED by default
-             let mut x         may change; only one &mut at a time
+   Rust   : a plain variable is LOCKED by default
+            a variable marked as changeable may change it — but
+            only ONE changeable reference is allowed at a time
 ```
 
-## PART C — Python vs Rust, step by step
+## Part C — Python vs Rust, step by step
 
 ```
              PYTHON                              RUST
 +------------------------------+   +------------------------------+
-| 1) x = [1, 2, 3]             |   | 1) let x = vec![1, 2, 3];    |
-+------------------------------+   |    (immutable by default)    |
-               v                   +------------------------------+
-+------------------------------+                  v
-| 2) Any function that gets    |   +------------------------------+
-|    x may change it           |   | 2) x.push(4) is an ERROR     |
-+------------------------------+   |    unless: let mut x         |
-               v                   +------------------------------+
-+------------------------------+                  v
-| 3) Caller's list changed     |   +------------------------------+
-|    unexpectedly              |   | 3) &mut = only ONE writer    |
-+------------------------------+   |    at any moment             |
-               v                   +------------------------------+
-+------------------------------+                  |
-| 4) Classic trap: mutable     |                  |
-|    default arguments         |                  |
+| 1) x = [1, 2, 3]               |   | 1) x = [1, 2, 3]              |
++------------------------------+   |    (locked, unchangeable, by  |
+               v                   |    default)                     |
++------------------------------+   +------------------------------+
+| 2) Any function that receives   |                  v
+|    x is free to change it        |   +------------------------------+
++------------------------------+   | 2) Trying to change x is an     |
+               v                   |    ERROR, unless you specially   |
++------------------------------+   |    marked it as changeable        |
+| 3) The caller's list changed     |   +------------------------------+
+|    without them expecting it      |                  v
++------------------------------+   +------------------------------+
+               v                   | 3) A changeable reference: only  |
++------------------------------+   |    ONE writer allowed at a time   |
+| 4) Classic trap: a shared,        |   +------------------------------+
+|    reused default value that       |                  |
+|    quietly builds up over time      |                  |
 +------------------------------+                  |
                |                                  |
                v                                  v
-  RESULT: surprising side            RESULT: changes are
-  effects                            explicit + exclusive
+  RESULT: surprising, unwanted            RESULT: changes are always
+  side effects                            obvious and on purpose
 ```
 
-(Correctness benefit, not a speed test.)
+This is a "does it behave correctly" comparison, not a speed test.
 
-## PART D — verdict
+## Part D — the plain verdict
 
 ```
 +-----------------------------------------------------------------+
-| WHICH IS BETTER?                                                |
+| WHICH ONE SHOULD YOU PICK?                                      |
 +--------+--------------------------------------------------------+
-| RUST   | Better when you want the compiler to enforce it.       |
+| RUST   | Better when you want the compiler itself to enforce      |
+|        | this rule for you.                                        |
 +--------+--------------------------------------------------------+
-| PYTHON | Fine with habits: tuples, frozen dataclasses, copying. |
+| PYTHON | Fine as long as you build good habits: use fixed-size     |
+|        | tuples, "frozen" data types, or make copies on purpose.    |
 +--------+--------------------------------------------------------+
 ```
 
-## PART E — why Rust wins here (deep dive)
+## Part E — a deeper look at the rule the Rust compiler enforces here
 
-The rule underneath `let` vs `let mut` is the same **aliasing
-invariant** that also powers data-race safety (see
-[04-data-race-safety](../04-data-race-safety)): at any point in the
-program, for any piece of data, the compiler allows either
+Underneath "locked by default vs. changeable," there's one single rule
+that also shows up in [04-data-race-safety](../04-data-race-safety):
+at any moment, the compiler only allows either
 
 ```
 +-----------------------------------------------------------------+
-| THE ALIASING RULE THE BORROW CHECKER ENFORCES                    |
+| THE RULE THE COMPILER ENFORCES                                    |
 +-----------------------------------------------------------------+
-|   many read-only borrows           OR         exactly one        |
-|   (&x, &x, &x, ...)                            mutable borrow    |
-|                                                 (&mut x)          |
-|                                                                   |
-|   ... but NEVER both live at the same time.                      |
+|   many read-only "just looking" references       OR   exactly one |
+|   at the same piece of data                            changeable |
+|                                                          reference  |
+|                                                                       |
+|   ... but NEVER both kinds at the same time.                         |
 +-----------------------------------------------------------------+
-| let mut x = vec![1, 2, 3];                                       |
-| let r1 = &x;        // ok: shared borrow                         |
-| let r2 = &x;        // ok: another shared borrow                 |
-| x.push(4);          // ERROR: cannot borrow `x` as mutable        |
-|                     // because it is also borrowed as immutable   |
-| println!("{r1:?}"); // r1/r2 still "alive" here, so the push      |
-|                     // above would have invalidated them          |
+| x = [1, 2, 3], marked as changeable                                 |
+| a = a read-only look at x     // fine: just looking                 |
+| b = another read-only look    // also fine: still just looking      |
+| try to add a new item to x    // ERROR: can't change x while         |
+|                                // something is still just looking     |
+|                                // at it                                 |
+| use "a" down here             // "a" is still expected to be valid   |
+|                                // here — the change above would        |
+|                                // have broken that                     |
 +-----------------------------------------------------------------+
 ```
 
-The compiler computes, for every reference, the exact span of code in
-which it is used (its "region"), then rejects any overlap between a
-`&mut` region and any other region touching the same data. This is
-checked once, at compile time, using purely static analysis of the
-source — there is no runtime flag or lock involved, so correct code
-pays *zero* runtime cost for the guarantee.
+The compiler works out, for every single reference, exactly which
+stretch of code it's used in, then refuses to let a "changeable"
+stretch overlap with any other stretch touching the same data. This
+check happens once, while reading through your code before it's even
+built — there's no locking or checking of any kind while the program
+is actually running, so correct code pays absolutely nothing extra for
+this guarantee.
 
-Contrast Python: a `list` passed into a function has no marker saying
-whether that function intends to read it or mutate it. The only way
-to know is to read the function body (or its docs, if any) — the
-language gives the compiler/interpreter no information to check
-against, so "who changed this?" is always a manual investigation,
-never a compiler error.
+Compare that to Python: a list handed into a function carries no
+marker at all saying whether that function plans to just look at it or
+actually change it. The only way to know is to go read that function's
+own code (or its notes, if it has any) — the language gives you
+nothing to check against ahead of time, so "wait, who changed this?"
+is always a manual hunt, never something the computer catches for you.
 
-## Run it
+## Try it yourself
 
 ```bash
 python python/immutability.py
 ```
 
-Demonstrates the classic mutable-default-argument trap and an
-in-place mutation surprising the caller.
+Shows the classic "shared, reused default value" trap, and a function
+that changes a list without the caller expecting it.
 
 ```bash
 cd rust
 cargo run --release
 ```
 
-Shows `let` vs `let mut`, and an explicit `&mut` parameter making a
-function's intent to mutate visible in its signature.
+Shows locked vs. changeable variables, and a function whose own
+description openly says it's allowed to change what you hand it.
