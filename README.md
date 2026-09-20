@@ -2,8 +2,13 @@
 
 Runnable Python and Rust code for the 15 concepts explained in
 [`rust_vs_python_ascii_diagrams_cpu.txt`](rust_vs_python_ascii_diagrams_cpu.txt).
-Each concept folder has a `python/` and a `rust/` implementation of the
-exact step-by-step example from that concept's PART C.
+
+Every concept folder has its own **`README.md`** with the full
+box-diagram walkthrough — What/Why/When/Where/Who/How (Part A), the
+concept in one picture (Part B), a Python-vs-Rust step flow (Part C),
+a verdict (Part D), and a compiler-internals deep dive on *why* Rust
+wins that specific concept (Part E) — plus a `python/` and `rust/`
+folder with the runnable code for that exact walkthrough.
 
 ## Layout
 
